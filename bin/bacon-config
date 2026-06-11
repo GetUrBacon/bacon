@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""
+bacon-config — developer control over the ads they see.
+
+The config lives at ~/.bacon/config.json and governs what bacon-fetch requests
+and renders. Five controls:
+
+  frequency      how often ads show          minimal|standard|more|max|every
+  profile        targeting data shared        anonymous|stack|full
+  surface        ad footprint                 strip|cards|statusline|both
+  block/unblock  mute categories/advertisers  e.g. crypto, food, ZapLogin
+  pause/resume   master on/off switch
+
+Usage:
+  bacon-config show
+  bacon-config frequency <minimal|standard|more|max|every>
+  bacon-config profile   <anonymous|stack|full>
+  bacon-config surface   <strip|cards|statusline|both>
+  bacon-config block     <category-or-advertiser>
+  bacon-config unblock   <category-or-advertiser>
+  bacon-config pause
+  bacon-config resume
+"""
+
+import json
+import sys
+from pathlib import Path
+
+CONFIG_DIR = Path.home() / ".bacon"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+FREQ_MAP = {"minimal": 20, "standard": 10, "more": 5, "max": 2, "every": 1}
+PROFILE_TIERS = ["anonymous", "stack", "full"]
+SURFACES = ["strip", "cards", "statusline", "both"]
+
+# Earnings estimates per (frequency, profile) at 500 prompts/day — for show output
+PROFILE_CPM = {"anonymous": 1.0, "stack": 2.5, "full": 6.5}
+
+DEFAULTS = {
+    "user_id": "anon",
+    "active": True,
+    "frequency_tier": "standard",
+    "frequency": 10,
+    "profile_tier": "anonymous",
+    "surface": "cards",
+    "blocked_categories": [],
+    "blocked_advertisers": [],
+}
+
+
+def load():
+    CONFIG_DIR.mkdir(exist_ok=True)
+    if CONFIG_FILE.exists():
+        try:
+            cfg = json.loads(CONFIG_FILE.read_text())
+        except Exception:
+            cfg = {}
+    else:
+        cfg = {}
+    # Backfill defaults without clobbering existing values (e.g. auction_url)
+    for k, v in DEFAULTS.items():
+        cfg.setdefault(k, v)
+    return cfg
+
+
+def save(cfg):
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+
+
+def est_monthly(freq_tier, profile_tier):
+    per_day = 500 / FREQ_MAP[freq_tier]
+    cpm = PROFILE_CPM[profile_tier]
+    return per_day * 30 / 1000 * cpm * 0.5  # developer 50% cut
+
+
+def cmd_show(cfg):
+    print("🥓 Bacon — your ad settings")
+    print("─" * 42)
+    state = "active" if cfg["active"] else "PAUSED"
+    print(f"  Status:       {state}")
+    print(f"  Frequency:    {cfg['frequency_tier']} (1 per {cfg['frequency']} prompts)")
+    print(f"  Profile:      {cfg['profile_tier']}")
+    print(f"  Surface:      {cfg['surface']}")
+    bc = ", ".join(cfg["blocked_categories"]) or "none"
+    ba = ", ".join(cfg["blocked_advertisers"]) or "none"
+    print(f"  Blocked cats: {bc}")
+    print(f"  Blocked advs: {ba}")
+    print("─" * 42)
+    est = est_monthly(cfg["frequency_tier"], cfg["profile_tier"])
+    print(f"  Est. earnings: ~${est:.2f}/mo  (at 500 prompts/day)")
+    print("─" * 42)
+
+
+def cmd_frequency(cfg, val):
+    if val not in FREQ_MAP:
+        print(f"Invalid. Choose: {', '.join(FREQ_MAP)}"); return
+    cfg["frequency_tier"] = val
+    cfg["frequency"] = FREQ_MAP[val]
+    save(cfg)
+    print(f"✅ Frequency → {val} (1 per {FREQ_MAP[val]} prompts). "
+          f"Est. ~${est_monthly(val, cfg['profile_tier']):.2f}/mo")
+
+
+def cmd_profile(cfg, val):
+    if val not in PROFILE_TIERS:
+        print(f"Invalid. Choose: {', '.join(PROFILE_TIERS)}"); return
+    cfg["profile_tier"] = val
+    save(cfg)
+    note = {
+        "anonymous": "no data shared — lowest CPM, random ads",
+        "stack": "languages/deps shared — relevant ads, ~2.5x CPM",
+        "full": "stack + domain shared — most relevant, ~6.5x CPM",
+    }[val]
+    print(f"✅ Profile → {val} ({note}). Your prompts/code are never shared.")
+
+
+def cmd_surface(cfg, val):
+    if val not in SURFACES:
+        print(f"Invalid. Choose: {', '.join(SURFACES)}"); return
+    cfg["surface"] = val
+    save(cfg)
+    note = {
+        "strip": "one-line ads in replies only",
+        "cards": "boxed cards/banners allowed in replies",
+        "statusline": "statusline only — never in Claude's replies (privacy-clean)",
+        "both": "in replies + animated statusline",
+    }[val]
+    print(f"✅ Surface → {val} ({note})")
+
+
+def cmd_block(cfg, val, on):
+    val = val.strip()
+    # Heuristic: lowercase single word with no spaces and a known category → category
+    cat_list = "blocked_categories"
+    adv_list = "blocked_advertisers"
+    known_cats = {"auth", "database", "payments", "infra", "monitoring",
+                  "testing", "cicd", "email", "search", "ai", "food", "general", "crypto"}
+    target = cat_list if val.lower() in known_cats else adv_list
+    key = val.lower() if target == cat_list else val
+    lst = cfg[target]
+    if on:
+        if key not in lst:
+            lst.append(key)
+        print(f"✅ Blocked {'category' if target==cat_list else 'advertiser'}: {key}")
+    else:
+        if key in lst:
+            lst.remove(key)
+        print(f"✅ Unblocked: {key}")
+    save(cfg)
+
+
+def cmd_pause(cfg, active):
+    cfg["active"] = active
+    save(cfg)
+    print("✅ Bacon resumed — ads on, earning again." if active
+          else "✅ Bacon paused — no ads, no earnings until you resume.")
+
+
+def main():
+    args = sys.argv[1:]
+    cfg = load()
+    if not args or args[0] == "show":
+        cmd_show(cfg); return
+    cmd, *rest = args
+    arg = rest[0] if rest else ""
+    if cmd == "frequency": cmd_frequency(cfg, arg)
+    elif cmd == "profile": cmd_profile(cfg, arg)
+    elif cmd == "surface": cmd_surface(cfg, arg)
+    elif cmd == "block": cmd_block(cfg, arg, on=True)
+    elif cmd == "unblock": cmd_block(cfg, arg, on=False)
+    elif cmd == "pause": cmd_pause(cfg, active=False)
+    elif cmd == "resume": cmd_pause(cfg, active=True)
+    else:
+        print(f"Unknown command: {cmd}\n{__doc__}")
+
+
+if __name__ == "__main__":
+    main()

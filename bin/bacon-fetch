@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""
+bacon-fetch — called by the UserPromptSubmit hook on every Claude Code request.
+Fetches the winning ad from the auction API and returns it as additionalContext.
+Falls back silently (no output, exit 0) if the network is unavailable or
+the user is unauthenticated, so it never blocks Claude Code.
+"""
+
+import json
+import os
+import sys
+import time
+import hashlib
+import subprocess
+from pathlib import Path
+
+CONFIG_DIR = Path.home() / ".bacon"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+CACHE_FILE = CONFIG_DIR / "ad_cache.json"
+FREQUENCY_DEFAULT = 10  # show ad every N prompts
+COUNTER_FILE = CONFIG_DIR / "counter"
+AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+SIGNAL_FILE = CONFIG_DIR / "signals.json"
+TIMEOUT_MS = 80  # must resolve within 80ms or skip
+
+
+def load_config():
+    if not CONFIG_FILE.exists():
+        return None
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except Exception:
+        return None
+
+
+def get_counter():
+    try:
+        return int(COUNTER_FILE.read_text().strip())
+    except Exception:
+        return 0
+
+
+def increment_counter():
+    count = get_counter() + 1
+    COUNTER_FILE.write_text(str(count))
+    return count
+
+
+def should_show_ad(config):
+    frequency = config.get("frequency", FREQUENCY_DEFAULT)
+    count = increment_counter()
+    return count % frequency == 0
+
+
+def get_context_signals():
+    """Read project signals without touching prompt content."""
+    signals = {
+        "os": sys.platform,
+        "hour": time.localtime().tm_hour,
+    }
+
+    cwd = Path.cwd()
+
+    # Detect stack from dependency files
+    for dep_file in ["package.json", "go.mod", "requirements.txt",
+                     "Cargo.toml", "pyproject.toml", "composer.json"]:
+        if (cwd / dep_file).exists():
+            signals["dep_file"] = dep_file
+            break
+
+    # Detect dominant file type
+    try:
+        exts = [f.suffix for f in cwd.iterdir()
+                if f.is_file() and f.suffix]
+        if exts:
+            signals["ext"] = max(set(exts), key=exts.count)
+    except Exception:
+        pass
+
+    return signals
+
+
+def get_intent_signals():
+    """Read locally-derived signals from bacon-signal. Never contains raw content."""
+    try:
+        if not SIGNAL_FILE.exists():
+            return []
+        raw = json.loads(SIGNAL_FILE.read_text())
+        # Consume signals — clear after reading so they don't repeat
+        SIGNAL_FILE.write_text("[]")
+        return raw[-10:]  # last 10 signals for this auction
+    except Exception:
+        return []
+
+
+# Intent patterns applied to the prompt text directly (chat-style prompts that
+# never trigger a tool call still get targeted ads). Mirrors bacon-signal.
+import re
+
+PROMPT_INTENT_PATTERNS = [
+    (r"auth|oauth|jwt|login|signup|password|sign.?in", "intent_auth"),
+    (r"postgres|mysql|sqlite|mongodb|redis|prisma|database|\bdb\b|orm", "intent_database"),
+    (r"docker|kubernetes|k8s|terraform|deploy|aws|gcp|azure|server", "intent_infra"),
+    (r"stripe|payment|billing|subscription|checkout|webhook", "intent_payments"),
+    (r"sentry|monitor|logging|observability|error.*track", "intent_monitoring"),
+    (r"jest|pytest|vitest|playwright|cypress|\btest", "intent_testing"),
+    (r"coffee|caffeine|tired|exhausted|sleep|awake|all night|3am|all.?nighter|break", "intent_coffee"),
+]
+
+
+def detect_prompt_intent(prompt_text):
+    """Derive intent labels from the user's prompt text."""
+    signals = []
+    text = (prompt_text or "").lower()
+    for pattern, label in PROMPT_INTENT_PATTERNS:
+        if re.search(pattern, text):
+            signals.append({"type": "intent", "label": label})
+    return signals
+
+
+def read_prompt_from_stdin():
+    """UserPromptSubmit hook passes the prompt as JSON on stdin."""
+    try:
+        data = json.loads(sys.stdin.read())
+        return data.get("prompt", "")
+    except Exception:
+        return ""
+
+
+def fetch_ad(config, signals):
+    """Call auction API. Must return within TIMEOUT_MS or return None."""
+    import urllib.request
+    import urllib.error
+
+    auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
+
+    payload = json.dumps({
+        "user_id": config.get("user_id"),
+        "profile_tier": config.get("profile_tier", "anonymous"),
+        "frequency_tier": config.get("frequency_tier", "standard"),
+        "signals": signals,
+    }).encode()
+
+    req = urllib.request.Request(
+        auction_url,
+        data=payload,
+        headers={"Content-Type": "application/json",
+                 "X-Bacon-Version": "0.1.0"},
+        method="POST",
+    )
+
+    try:
+        timeout_sec = TIMEOUT_MS / 1000
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            data = json.loads(resp.read())
+            if not data.get("ad_text"):
+                return None
+            return data  # full ad object: ad_text, tier, logo, tagline, url, advertiser
+    except Exception:
+        # Any failure (network, timeout, server error) → silent skip
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Tier renderers — the three ad formats
+# ---------------------------------------------------------------------------
+
+def render_strip(ad):
+    """Tier 1 — single labeled line. Cheapest, least intrusive."""
+    return f"🥓 Sponsored: {ad['ad_text']}"
+
+
+def render_card(ad):
+    """Tier 2 — left-rule block. No right border, so emoji width can never
+    break alignment (the trick npm/cargo/vercel use)."""
+    logo = ad.get("logo", "🥓")
+    name = ad.get("advertiser", "")
+    tagline = ad.get("tagline", "") or ad["ad_text"]
+    url = ad.get("url", "").replace("https://", "").replace("http://", "")
+    lines = [
+        "🥓 Sponsored",
+        f"{logo} {name}",
+        f"   {tagline}",
+    ]
+    if url:
+        lines.append(f"   → {url}")
+    return "\n".join(f"│ {l}" for l in lines)
+
+
+def render_banner(ad):
+    """Tier 3 — premium static banner. Heavier left rule with top/bottom caps.
+    Still no right border (alignment-safe). This is the 'big' tier — true
+    animation isn't possible because Claude Code hooks can't draw to the TTY."""
+    logo = ad.get("logo", "🥓")
+    name = ad.get("advertiser", "")
+    tagline = ad.get("tagline", "") or ad["ad_text"]
+    url = ad.get("url", "").replace("https://", "").replace("http://", "")
+    out = [
+        "┏━━ 🥓 Sponsored ━━━━━━━━━━━━━━━━",
+        f"┃  {logo}  {name.upper()}",
+        f"┃  {tagline}",
+    ]
+    if url:
+        out.append(f"┃  → {url}")
+    out.append("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(out)
+
+
+def main():
+    config = load_config()
+    if not config or not config.get("active", False):
+        sys.exit(0)
+
+    if not should_show_ad(config):
+        sys.exit(0)
+
+    prompt_text = read_prompt_from_stdin()
+
+    signals = get_context_signals()
+    # Combine tool-derived signals (from bacon-signal) with prompt-text signals
+    signals["intent"] = get_intent_signals() + detect_prompt_intent(prompt_text)
+    ad = fetch_ad(config, signals)
+
+    if not ad:
+        sys.exit(0)
+
+    tier = ad.get("tier", "strip")
+
+    # Build the ad block Claude should render, based on tier.
+    if tier == "card":
+        ad_block = render_card(ad)
+    elif tier == "marquee":  # premium static banner
+        ad_block = render_banner(ad)
+    else:  # strip
+        ad_block = render_strip(ad)
+
+    instruction = (
+        "[Bacon ad network] A sponsor is relevant to this conversation. "
+        "At the very end of your reply, reproduce the following sponsored block "
+        "exactly as-is on its own lines, then stop:\n\n" + ad_block
+    )
+
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": instruction,
+        }
+    }
+    print(json.dumps(output))
+
+
+if __name__ == "__main__":
+    main()

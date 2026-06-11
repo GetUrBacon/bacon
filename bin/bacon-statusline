@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""
+bacon-statusline — renders ONE frame of the animated sponsor segment.
+
+Claude Code calls this every `refreshInterval` seconds (min 1s). Each call
+returns the next frame. Frame state (the tick counter) is stored in a temp
+file since each invocation is a fresh process.
+
+Two animation styles:
+  --style marquee   scrolling text through a fixed window
+  --style sweep     a light sweeping left→right across the segment
+  --style pulse     the logo/name pulsing brighter/dimmer (color)
+
+Usage (Claude Code statusline command):  bacon-statusline
+Demo (print N frames as a filmstrip):    bacon-statusline --demo 12
+"""
+
+import sys
+import json
+from pathlib import Path
+
+STATE = Path.home() / ".bacon" / "sl_tick"
+
+# ANSI
+DIM = "\033[2m"; BOLD = "\033[1m"; RESET = "\033[0m"
+YEL = "\033[93m"; CYAN = "\033[96m"; GRN = "\033[92m"; ORANGE = "\033[38;5;208m"
+
+# The currently-serving sponsor (would come from the auction in production)
+SPONSOR = {
+    "logo": "☕",
+    "name": "BYTE & BREW",
+    "tagline": "the dev cafe · bottomless cold brew · byteandbrew.cafe",
+}
+
+WINDOW = 34  # visible character window for the scrolling marquee
+
+
+def next_tick():
+    try:
+        t = int(STATE.read_text().strip())
+    except Exception:
+        t = 0
+    STATE.write_text(str(t + 1))
+    return t
+
+
+def frame_marquee(tick, sp):
+    """Scroll the tagline through a fixed window."""
+    text = f"{sp['logo']}  {sp['name']} — {sp['tagline']}    "
+    n = len(text)
+    start = tick % n
+    window = (text + text)[start:start + WINDOW]
+    return f"{ORANGE}🥓 Sponsored{RESET} {DIM}│{RESET} {YEL}{window}{RESET}"
+
+
+def frame_sweep(tick, sp):
+    """A light dot sweeping left→right after the sponsor name."""
+    track_len = 12
+    pos = tick % track_len
+    track = "".join("▸" if i == pos else "·" for i in range(track_len))
+    return (f"{ORANGE}🥓 Sponsored{RESET} {sp['logo']} {BOLD}{sp['name']}{RESET} "
+            f"{CYAN}{track}{RESET}")
+
+
+def frame_pulse(tick, sp):
+    """Pulse the name brightness in a cycle."""
+    cycle = ["\033[2m", "\033[0m", "\033[1m", "\033[1;93m", "\033[1m", "\033[0m"]
+    style = cycle[tick % len(cycle)]
+    return (f"{ORANGE}🥓 Sponsored{RESET} {sp['logo']} "
+            f"{style}{sp['name']}{RESET} {DIM}· byteandbrew.cafe{RESET}")
+
+
+STYLES = {"marquee": frame_marquee, "sweep": frame_sweep, "pulse": frame_pulse}
+
+
+def main():
+    args = sys.argv[1:]
+    style = "marquee"
+    if "--style" in args:
+        style = args[args.index("--style") + 1]
+    render = STYLES.get(style, frame_marquee)
+
+    if "--demo" in args:
+        # Filmstrip: print N consecutive frames so the motion is visible
+        # without a live 1fps TTY.
+        n = int(args[args.index("--demo") + 1])
+        for label, fn in STYLES.items():
+            print(f"\n=== style: {label} ({n} frames, 1 per second live) ===")
+            for t in range(n):
+                print(f"  t{t:<2} {fn(t, SPONSOR)}")
+        return
+
+    # Read the session JSON Claude Code passes on stdin (needed to forward to a
+    # wrapped statusline). Read it once, up front.
+    stdin_data = ""
+    if not sys.stdin.isatty():
+        try:
+            stdin_data = sys.stdin.read()
+        except Exception:
+            stdin_data = ""
+
+    # --wrap "<command>": run the user's existing statusline first, print its
+    # output, then append the Bacon segment. This is how we add to a statusline
+    # without clobbering the user's context/git/cost display.
+    if "--wrap" in args:
+        import subprocess
+        inner = args[args.index("--wrap") + 1]
+        # shell=True is intentional and matches Claude Code's own behavior: a
+        # statusLine.command is a shell-string (e.g. "cd $dir && git branch"),
+        # and `inner` is the user's OWN prior statusline command that we captured
+        # from their settings.json during setup — not external/attacker input.
+        # Splitting into argv would break shell statuslines.
+        try:
+            proc = subprocess.run(inner, shell=True, input=stdin_data,  # noqa: S602
+                                  capture_output=True, text=True, timeout=3)
+            original = proc.stdout.rstrip("\n")
+            if original:
+                print(original)
+        except Exception:
+            pass  # if their statusline fails, still show the ad
+
+    # Production: emit one Bacon frame, advance the counter
+    print(render(next_tick(), SPONSOR))
+
+
+if __name__ == "__main__":
+    main()

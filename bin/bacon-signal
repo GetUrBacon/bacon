@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""
+bacon-signal — PostToolUse hook. Reads tool output locally, detects intent/struggle
+signals, and writes them to a local state file. No raw output is ever sent to
+the server — only derived signal labels (e.g. "auth_error", "docker_struggle").
+
+bacon-fetch reads this state file on the next UserPromptSubmit to enrich the
+auction request with better targeting context.
+"""
+
+import json
+import sys
+import re
+import os
+from pathlib import Path
+
+CONFIG_DIR = Path.home() / ".bacon"
+SIGNAL_FILE = CONFIG_DIR / "signals.json"
+MAX_SIGNALS = 20  # rolling window, oldest dropped
+
+# ---------------------------------------------------------------------------
+# Signal detection rules — all local, no content leaves the machine
+# ---------------------------------------------------------------------------
+
+ERROR_PATTERNS = [
+    (r"error|Error|ERROR|failed|FAILED|exception|Exception", "generic_error"),
+    (r"ENOENT|No such file|not found", "file_not_found"),
+    (r"permission denied|EACCES|EPERM", "permission_error"),
+    (r"npm (ERR|error)|yarn error|pnpm error", "npm_error"),
+    (r"pip.*error|ModuleNotFound|ImportError", "python_dep_error"),
+    (r"go: |go build|undefined:|cannot use", "go_error"),
+    (r"docker.*Error|container.*failed|image.*not found", "docker_error"),
+    (r"git.*error|merge conflict|CONFLICT", "git_error"),
+    (r"401|403|Unauthorized|Forbidden|invalid.*token|auth.*fail", "auth_error"),
+    (r"timeout|ETIMEDOUT|connection refused|ECONNREFUSED", "network_error"),
+    (r"OOM|out of memory|killed", "memory_error"),
+    (r"syntax.*error|SyntaxError|unexpected token", "syntax_error"),
+    (r"test.*fail|FAIL|assertion.*error|AssertionError", "test_failure"),
+    (r"lint.*error|eslint|prettier.*error", "lint_error"),
+    (r"type.*error|TypeError|cannot.*type", "type_error"),
+    (r"database.*error|relation.*not exist|SQL.*error|migration", "db_error"),
+    (r"deploy.*fail|build.*fail|CI.*fail", "deploy_error"),
+]
+
+INTENT_PATTERNS = [
+    # Auth / identity
+    (r"auth|oauth|jwt|session|login|signup|password|clerk|auth0|supabase.*auth", "intent_auth"),
+    # Database
+    (r"postgres|mysql|sqlite|mongodb|redis|prisma|drizzle|sequelize|orm", "intent_database"),
+    # Deployment / infra
+    (r"docker|kubernetes|k8s|terraform|aws|gcp|azure|fly\.io|vercel|railway", "intent_infra"),
+    # Payments
+    (r"stripe|payment|billing|subscription|webhook", "intent_payments"),
+    # Monitoring / observability
+    (r"sentry|datadog|grafana|prometheus|logging|error.*track", "intent_monitoring"),
+    # Testing
+    (r"jest|pytest|vitest|playwright|cypress|testing", "intent_testing"),
+    # CI/CD
+    (r"github.*action|gitlab.*ci|circle.*ci|jenkins|pipeline", "intent_cicd"),
+    # AI / LLM
+    (r"openai|anthropic|llm|embedding|vector|langchain|rag", "intent_ai"),
+    # Search
+    (r"elasticsearch|algolia|typesense|search.*index", "intent_search"),
+    # Email
+    (r"sendgrid|resend|mailgun|ses|smtp|email.*send", "intent_email"),
+    # Coffee / break (lifestyle — triggers cafe ads)
+    (r"coffee|caffeine|tired|break|exhausted|late night|3am|all.?nighter|sleep", "intent_coffee"),
+]
+
+STRUGGLE_THRESHOLD = 3  # N errors of same type in window = "struggling"
+
+
+def load_config():
+    config_file = CONFIG_DIR / "config.json"
+    if not config_file.exists():
+        return None
+    try:
+        return json.loads(config_file.read_text())
+    except Exception:
+        return None
+
+
+def load_signals():
+    if not SIGNAL_FILE.exists():
+        return []
+    try:
+        return json.loads(SIGNAL_FILE.read_text())
+    except Exception:
+        return []
+
+
+def save_signals(signals):
+    CONFIG_DIR.mkdir(exist_ok=True)
+    # Keep rolling window
+    signals = signals[-MAX_SIGNALS:]
+    SIGNAL_FILE.write_text(json.dumps(signals))
+
+
+def detect_signals(tool_name, tool_input, tool_output):
+    """Derive signal labels from tool data. Never store raw content."""
+    signals = []
+    text = (str(tool_output or "") + " " + str(tool_input or "")).lower()
+
+    for pattern, label in ERROR_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            signals.append({"type": "error", "label": label})
+
+    for pattern, label in INTENT_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            signals.append({"type": "intent", "label": label})
+
+    # Tool-level signals
+    if tool_name == "Bash":
+        cmd = str(tool_input.get("command", ""))
+        if re.search(r"docker|kubectl|helm", cmd):
+            signals.append({"type": "tool", "label": "using_containers"})
+        if re.search(r"git rebase|git merge|git cherry", cmd):
+            signals.append({"type": "tool", "label": "git_advanced"})
+
+    return signals
+
+
+def detect_struggle(existing_signals, new_signals):
+    """Return struggle labels when same error appears N times in window."""
+    struggling = []
+    all_labels = [s["label"] for s in existing_signals + new_signals
+                  if s["type"] == "error"]
+    for label in set(all_labels):
+        if all_labels.count(label) >= STRUGGLE_THRESHOLD:
+            struggling.append(f"struggling_{label}")
+    return struggling
+
+
+def main():
+    config = load_config()
+    if not config or not config.get("active", False):
+        sys.exit(0)
+
+    try:
+        hook_data = json.loads(sys.stdin.read())
+    except Exception:
+        sys.exit(0)
+
+    tool_name = hook_data.get("tool_name", "")
+    tool_input = hook_data.get("tool_input", {})
+    tool_output = hook_data.get("tool_output", "")
+
+    new_signals = detect_signals(tool_name, tool_input, tool_output)
+    if not new_signals:
+        sys.exit(0)
+
+    existing = load_signals()
+    struggle_labels = detect_struggle(existing, new_signals)
+
+    # Add struggle signals
+    for label in struggle_labels:
+        new_signals.append({"type": "struggle", "label": label})
+
+    save_signals(existing + new_signals)
+    # Exit 0, no stdout — this hook only updates local state
+
+
+if __name__ == "__main__":
+    main()

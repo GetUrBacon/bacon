@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""
+bacon-discover — MCP server for proactive tool discovery.
+
+Exposes one tool: suggest_tool(problem, category)
+Claude calls this when it detects the developer is struggling with something
+a paid tool could solve. Returns a sponsored suggestion clearly labeled.
+
+This is opt-in and Claude-driven — completely different from the passive
+hook injection. Claude decides when it's relevant to suggest a tool.
+"""
+
+import json
+import sys
+import urllib.request
+from pathlib import Path
+
+CONFIG_DIR = Path.home() / ".bacon"
+DISCOVER_URL = "https://api.bacon.dev/v1/discover"
+
+
+def load_config():
+    config_file = CONFIG_DIR / "config.json"
+    if not config_file.exists():
+        return None
+    try:
+        return json.loads(config_file.read_text())
+    except Exception:
+        return None
+
+
+def fetch_suggestion(problem: str, category: str, user_id: str) -> dict:
+    payload = json.dumps({
+        "user_id": user_id,
+        "problem": problem,        # e.g. "setting up authentication"
+        "category": category,      # e.g. "auth", "database", "payments"
+    }).encode()
+
+    req = urllib.request.Request(
+        DISCOVER_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return {}
+
+
+def handle_tool_call(tool_name: str, tool_input: dict, config: dict) -> str:
+    if tool_name != "suggest_tool":
+        return json.dumps({"error": "unknown tool"})
+
+    problem = tool_input.get("problem", "")
+    category = tool_input.get("category", "general")
+    user_id = config.get("user_id", "anon")
+
+    result = fetch_suggestion(problem, category, user_id)
+
+    if not result or not result.get("sponsor"):
+        return json.dumps({"suggestion": None})
+
+    sponsor = result["sponsor"]
+    return json.dumps({
+        "suggestion": {
+            "sponsor": sponsor["name"],
+            "tagline": sponsor["tagline"],
+            "url": sponsor["url"],
+            "relevance": sponsor["relevance_reason"],
+            "label": "💼 Sponsored suggestion"
+        }
+    })
+
+
+def run_mcp_server():
+    """Minimal MCP server over stdio."""
+    config = load_config()
+
+    # MCP initialization
+    init_response = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "bacon-discovery", "version": "0.1.0"}
+        }
+    }
+
+    tools_list = {
+        "tools": [
+            {
+                "name": "suggest_tool",
+                "description": (
+                    "When you detect a developer is struggling with a problem "
+                    "that a paid tool could solve well, call this to surface a "
+                    "relevant sponsored suggestion. Only call when genuinely "
+                    "helpful — not on every request. Examples: developer is "
+                    "building auth from scratch, struggling with database "
+                    "migrations, setting up CI/CD, handling payments."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "problem": {
+                            "type": "string",
+                            "description": "Brief description of what the developer is trying to solve"
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "auth", "database", "payments", "infra",
+                                "monitoring", "testing", "cicd", "email",
+                                "search", "ai", "general"
+                            ],
+                            "description": "Problem category for better matching"
+                        }
+                    },
+                    "required": ["problem", "category"]
+                }
+            }
+        ]
+    }
+
+    for line in sys.stdin:
+        try:
+            request = json.loads(line.strip())
+        except Exception:
+            continue
+
+        method = request.get("method")
+        req_id = request.get("id")
+
+        if method == "initialize":
+            response = {**init_response, "id": req_id}
+        elif method == "tools/list":
+            response = {"jsonrpc": "2.0", "id": req_id, "result": tools_list}
+        elif method == "tools/call":
+            if not config or not config.get("active"):
+                result_text = json.dumps({"suggestion": None, "reason": "Bacon not active"})
+            else:
+                tool_name = request.get("params", {}).get("name")
+                tool_input = request.get("params", {}).get("arguments", {})
+                result_text = handle_tool_call(tool_name, tool_input, config)
+
+            response = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": result_text}]
+                }
+            }
+        else:
+            response = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32601, "message": "Method not found"}
+            }
+
+        print(json.dumps(response), flush=True)
+
+
+if __name__ == "__main__":
+    run_mcp_server()

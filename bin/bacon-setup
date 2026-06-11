@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""
+bacon-setup — first-run onboarding + statusline management.
+
+Most settings (frequency/profile/surface/blocklist) are handled by bacon-config.
+bacon-setup owns the things bacon-config doesn't:
+  - account/config bootstrap (init)
+  - the CONSENTED edit to ~/.claude/settings.json to enable the statusline ad
+    (wrap-don't-clobber: preserves any existing statusline)
+  - clean uninstall (restores the original statusline)
+
+Commands:
+  bacon-setup status                 show whether Bacon is configured + active
+  bacon-setup init [--user-id X]     create ~/.bacon/config.json with defaults
+  bacon-setup statusline-enable [--style marquee|sweep|pulse]
+                                     add Bacon to ~/.claude/settings.json,
+                                     wrapping any existing statusline
+  bacon-setup statusline-disable     restore the original statusline
+  bacon-setup uninstall              disable statusline + deactivate config
+
+This command edits the user's ~/.claude/settings.json. It is meant to be run BY
+THE USER (or with explicit consent), never silently.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+BACON_DIR = Path.home() / ".bacon"
+CONFIG_FILE = BACON_DIR / "config.json"
+CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+SL_BACKUP = BACON_DIR / "statusline_backup.json"
+
+STATUSLINE_BIN = str(Path(__file__).resolve().parent / "bacon-statusline")
+
+
+def load_json(p, default):
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return default
+
+
+def bacon_command(style, wrap=None):
+    """Build the statusLine.command string for our script."""
+    cmd = f'python3 "{STATUSLINE_BIN}" --style {style}'
+    if wrap:
+        # Escape any double-quotes in the wrapped command
+        safe = wrap.replace('"', '\\"')
+        cmd += f' --wrap "{safe}"'
+    return cmd
+
+
+def cmd_status():
+    cfg = load_json(CONFIG_FILE, None)
+    if not cfg:
+        print("Bacon is not set up. Run: bacon-setup init")
+        return
+    settings = load_json(CLAUDE_SETTINGS, {})
+    sl = settings.get("statusLine", {})
+    sl_on = "bacon-statusline" in json.dumps(sl)
+    print("🥓 Bacon setup status")
+    print(f"  Config:     {'✅ present' if cfg else '❌ missing'}")
+    print(f"  Active:     {cfg.get('active')}")
+    print(f"  Surface:    {cfg.get('surface')}")
+    print(f"  Statusline: {'✅ enabled' if sl_on else '❌ not enabled'}")
+
+
+def cmd_init(user_id):
+    BACON_DIR.mkdir(exist_ok=True)
+    cfg = load_json(CONFIG_FILE, {})
+    cfg.setdefault("user_id", user_id or "anon")
+    cfg.setdefault("active", True)
+    cfg.setdefault("frequency_tier", "standard")
+    cfg.setdefault("frequency", 10)
+    cfg.setdefault("profile_tier", "anonymous")
+    cfg.setdefault("surface", "cards")
+    cfg.setdefault("blocked_categories", [])
+    cfg.setdefault("blocked_advertisers", [])
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    print(f"✅ Config ready at {CONFIG_FILE} (user_id={cfg['user_id']})")
+
+
+def cmd_statusline_enable(style):
+    if not CLAUDE_SETTINGS.exists():
+        CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        settings = {}
+    else:
+        settings = load_json(CLAUDE_SETTINGS, {})
+
+    existing = settings.get("statusLine")
+
+    # Already enabled? (idempotent)
+    if existing and "bacon-statusline" in json.dumps(existing):
+        print("Bacon statusline already enabled.")
+        return
+
+    # Wrap-don't-clobber: if a statusline exists, preserve it and chain ours after.
+    wrap_cmd = None
+    if existing and existing.get("type") == "command" and existing.get("command"):
+        SL_BACKUP.write_text(json.dumps(existing, indent=2))
+        wrap_cmd = existing["command"]
+        print(f"↪ Preserving your existing statusline (backed up to {SL_BACKUP})")
+
+    settings["statusLine"] = {
+        "type": "command",
+        "command": bacon_command(style, wrap=wrap_cmd),
+        "refreshInterval": 1,
+    }
+    CLAUDE_SETTINGS.write_text(json.dumps(settings, indent=2))
+    print(f"✅ Bacon statusline enabled (style={style}). "
+          f"It appears on your next interaction with Claude Code.")
+
+
+def cmd_statusline_disable():
+    if not CLAUDE_SETTINGS.exists():
+        print("No settings.json found."); return
+    settings = load_json(CLAUDE_SETTINGS, {})
+    sl = settings.get("statusLine", {})
+    if "bacon-statusline" not in json.dumps(sl):
+        print("Bacon statusline is not enabled."); return
+
+    # Restore the original statusline if we backed one up, else remove entirely.
+    if SL_BACKUP.exists():
+        settings["statusLine"] = load_json(SL_BACKUP, {})
+        SL_BACKUP.unlink()
+        print("✅ Restored your original statusline.")
+    else:
+        settings.pop("statusLine", None)
+        print("✅ Removed the Bacon statusline (you had none before).")
+    CLAUDE_SETTINGS.write_text(json.dumps(settings, indent=2))
+
+
+def cmd_uninstall():
+    cmd_statusline_disable()
+    cfg = load_json(CONFIG_FILE, {})
+    if cfg:
+        cfg["active"] = False
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    print("✅ Bacon deactivated. Your balance is preserved and will still pay out.")
+
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else "status"
+
+    def opt(name, default=None):
+        return args[args.index(name) + 1] if name in args else default
+
+    if cmd == "status":
+        cmd_status()
+    elif cmd == "init":
+        cmd_init(opt("--user-id"))
+    elif cmd == "statusline-enable":
+        cmd_statusline_enable(opt("--style", "marquee"))
+    elif cmd == "statusline-disable":
+        cmd_statusline_disable()
+    elif cmd == "uninstall":
+        cmd_uninstall()
+    else:
+        print(__doc__)
+
+
+if __name__ == "__main__":
+    main()

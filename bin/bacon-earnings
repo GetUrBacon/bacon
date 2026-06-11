@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""
+bacon-earnings — show the developer's earnings from the Bacon backend.
+
+Usage:
+  bacon-earnings summary    (default)
+  bacon-earnings history
+"""
+
+import json
+import sys
+import urllib.request
+from pathlib import Path
+
+CONFIG_DIR = Path.home() / ".bacon"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+DEFAULT_API = "https://api.geturbacon.dev"
+
+
+def load_config():
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def api_base(config):
+    # Derive API base from the auction_url if present (local testing → :8003)
+    auction = config.get("auction_url", "")
+    if auction:
+        return auction.rsplit("/v1/", 1)[0]
+    return DEFAULT_API
+
+
+def fetch_earnings(config):
+    base = api_base(config)
+    user_id = config.get("user_id", "anon")
+    url = f"{base}/v1/earnings/{user_id}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def bar(pct, width=10):
+    filled = int(round(pct / 100 * width))
+    return "█" * filled + "░" * (width - filled)
+
+
+def main():
+    config = load_config()
+    if not config:
+        print("Bacon isn't set up yet. Run /bacon:setup first.")
+        sys.exit(0)
+
+    data = fetch_earnings(config)
+    if "error" in data:
+        print(f"Couldn't reach the Bacon backend: {data['error']}")
+        sys.exit(0)
+
+    balance = data.get("balance", 0.0)
+    total = data.get("impressions_total", 0)
+    today = data.get("impressions_today", 0)
+    cpm = data.get("effective_cpm", 0.0)
+
+    pro_pct = min(100, balance / 20 * 100)
+    max_pct = min(100, balance / 100 * 100)
+
+    print("🥓 Bacon Earnings")
+    print("─" * 40)
+    print(f"  Balance:        ${balance:.4f}   (payout at $10)")
+    print(f"  Impressions:    {total} total · {today} today")
+    print(f"  Frequency tier: {config.get('frequency_tier', 'standard')}")
+    print(f"  Profile tier:   {config.get('profile_tier', 'anonymous')}")
+    print(f"  Effective CPM:  ${cpm:.2f}")
+    print("─" * 40)
+    print("  Subscription progress:")
+    print(f"    Pro  ($20/mo): [{bar(pro_pct)}] {pro_pct:.1f}%")
+    print(f"    Max ($100/mo): [{bar(max_pct)}] {max_pct:.1f}%")
+    print("─" * 40)
+
+
+if __name__ == "__main__":
+    main()
