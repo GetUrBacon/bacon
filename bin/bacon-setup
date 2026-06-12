@@ -247,11 +247,8 @@ def cmd_status():
 def cmd_init(user_id=None):
     BACON_DIR.mkdir(exist_ok=True)
     cfg = load_json(CONFIG_FILE, {})
-    # If no user_id provided and no Clerk ID already stored, run OAuth login
-    existing_id = cfg.get("user_id", "")
-    if not user_id and not existing_id.startswith("user_"):
-        user_id = cmd_login()
-    cfg.setdefault("user_id", user_id or f"dev-{uuid.uuid4().hex[:12]}")
+    resolved_id = user_id or cfg.get("user_id") or f"dev-{uuid.uuid4().hex[:12]}"
+    cfg["user_id"] = resolved_id
     cfg.setdefault("active", True)
     cfg.setdefault("frequency_tier", "standard")
     cfg.setdefault("frequency", 10)
