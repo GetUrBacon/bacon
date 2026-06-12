@@ -73,4 +73,4 @@ bacon-config resume             # resume
 
 ## Payouts
 
-Earnings accumulate in your Bacon balance. Payouts are issued when your balance reaches the threshold — see [geturbacon.com/dashboard](https://geturbacon.com/dashboard) for current status.
+Earnings accumulate in your Bacon balance. Payouts are issued when your balance reaches the threshold — see [geturbacon.dev/dashboard](https://geturbacon.dev/dashboard) for current status.
