@@ -37,7 +37,7 @@ SURFACES = ["strip", "cards", "statusline", "both"]
 PROFILE_CPM = {"anonymous": 1.0, "stack": 2.5, "full": 6.5}
 
 DEFAULTS = {
-    "user_id": "anon",
+    "user_id": "",
     "active": True,
     "frequency_tier": "standard",
     "frequency": 10,
@@ -89,6 +89,7 @@ def cmd_show(cfg):
     print(f"  Surface:      {cfg['surface']}")
     bc = ", ".join(cfg["blocked_categories"]) or "none"
     ba = ", ".join(cfg["blocked_advertisers"]) or "none"
+    print(f"  Spinner:      {'on' if cfg.get('spinner_enabled') else 'off'}")
     print(f"  Blocked cats: {bc}")
     print(f"  Blocked advs: {ba}")
     print("─" * 42)
@@ -132,6 +133,8 @@ def cmd_surface(cfg, val):
         "both": "in replies + animated statusline",
     }[val]
     print(f"✅ Surface → {val} ({note})")
+    if val in ("statusline", "both"):
+        print("  ⚠️  To activate the statusline, also run: bacon-setup statusline-enable")
 
 
 def cmd_block(cfg, val, on):

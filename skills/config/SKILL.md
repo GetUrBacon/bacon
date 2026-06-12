@@ -7,8 +7,7 @@ description: Configure Bacon ad settings via interactive menus — frequency, pr
 Help the user adjust their Bacon ad settings using **interactive AskUserQuestion menus**
 (native select / multi-select pickers), then apply each choice with the `bacon-config` CLI.
 
-The CLI lives at `${CLAUDE_PLUGIN_ROOT}/bin/bacon-config` (fall back to
-`/Users/oscar-rivas/Github/bacon/bin/bacon-config` for local testing).
+The CLI lives at `${CLAUDE_PLUGIN_ROOT}/bin/bacon-config`.
 Always read current settings first so menus show the active choice:
 `python3 <path>/bacon-config show`
 

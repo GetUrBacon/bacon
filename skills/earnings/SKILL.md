@@ -10,8 +10,6 @@ Show the user their current Bacon earnings and status.
 
 1. Run the earnings CLI (use the absolute path so it resolves in the minimal hook PATH):
    `python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-earnings summary`
-   If `$CLAUDE_PLUGIN_ROOT` is unavailable, fall back to:
-   `python3 /Users/oscar-rivas/Github/bacon/bin/bacon-earnings summary`
 2. The CLI already prints a formatted dashboard — show its output directly. Do not reformat or invent numbers.
 
 ```
