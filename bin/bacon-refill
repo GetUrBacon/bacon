@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""
+bacon-refill — detached one-shot daemon: syncs campaigns, refills tokens, flushes reports.
+
+Called by spawn_refill() (via bacon_core) whenever the token bucket runs low or
+campaigns are stale. Runs completely detached from the hot path; always exits 0.
+"""
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+# Allow `import bacon_core` from the same directory as this script
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import urllib.request
+import urllib.error
+
+try:
+    import bacon_core as b
+except Exception:
+    sys.exit(0)
+
+import fcntl
+
+
+def _http_get(url, timeout=2.0):
+    req = urllib.request.Request(
+        url,
+        headers={"Content-Type": "application/json", "X-Bacon-Version": "0.1.0"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def _http_post(url, payload, timeout=2.0):
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", "X-Bacon-Version": "0.1.0"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status, json.loads(resp.read())
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — config gate
+# ---------------------------------------------------------------------------
+
+try:
+    config = b.load_config()
+    if not config.get("active"):
+        sys.exit(0)
+except Exception:
+    sys.exit(0)
+
+# ---------------------------------------------------------------------------
+# Step 2 — sync campaigns
+# ---------------------------------------------------------------------------
+
+try:
+    data = _http_get(b.campaigns_sync_url(config), timeout=2.0)
+    campaigns = data.get("campaigns", [])
+    b.CONFIG_DIR.mkdir(exist_ok=True)
+    b.CAMPAIGNS_FILE.write_text(json.dumps({"ts": time.time(), "campaigns": campaigns}))
+except Exception:
+    pass  # Leave existing cache in place; never block remaining steps
+
+# ---------------------------------------------------------------------------
+# Step 3 — refill token bucket
+# ---------------------------------------------------------------------------
+
+try:
+    count = b.tokens_count()
+    target = config.get("token_bucket_target", 50)
+    needed = target - count
+    if needed > 0:
+        user_id = config.get("user_id")
+        status, resp_data = _http_post(
+            b.tokens_url(config),
+            {"user_id": user_id, "n": needed},
+            timeout=2.0,
+        )
+        if 200 <= status < 300:
+            new_tokens = resp_data.get("tokens", [])
+            if new_tokens:
+                b.append_tokens(new_tokens)
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
+# Step 4 — flush buffered reports
+# ---------------------------------------------------------------------------
+
+try:
+    if b.REPORTS_FILE.exists():
+        # Snapshot N lines under lock, then send them, then truncate those lines
+        flags = os.O_RDWR
+        fd = os.open(str(b.REPORTS_FILE), flags, 0o600)
+        try:
+            with os.fdopen(fd, "r+") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                try:
+                    f.seek(0)
+                    all_lines = f.readlines()
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+        except Exception:
+            all_lines = []
+
+        records = []
+        snapshot_n = 0
+        for line in all_lines:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                    snapshot_n += 1
+                except Exception:
+                    snapshot_n += 1  # skip malformed but still count as consumed
+
+        if records:
+            try:
+                status, _ = _http_post(
+                    b.batch_url(config),
+                    {"reports": records},
+                    timeout=3.0,
+                )
+                if 200 <= status < 300:
+                    # Rewrite file keeping only lines added after our snapshot
+                    fd2 = os.open(str(b.REPORTS_FILE), os.O_RDWR, 0o600)
+                    try:
+                        with os.fdopen(fd2, "r+") as f2:
+                            fcntl.flock(f2, fcntl.LOCK_EX)
+                            try:
+                                f2.seek(0)
+                                current_lines = f2.readlines()
+                                remaining = current_lines[snapshot_n:]
+                                f2.seek(0)
+                                f2.truncate()
+                                f2.writelines(remaining)
+                            finally:
+                                fcntl.flock(f2, fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+            except Exception:
+                pass  # Leave reports for the next run
+except Exception:
+    pass
+
+sys.exit(0)

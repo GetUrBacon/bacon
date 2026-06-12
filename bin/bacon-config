@@ -48,6 +48,9 @@ DEFAULTS = {
     "cache_ttl_sec": 600,
     "spinner_enabled": False,
     "spinner_style": "default",
+    "token_bucket_target": 50,
+    "campaigns_ttl_sec": 600,
+    "refill_low_watermark": 10,
 }
 
 
