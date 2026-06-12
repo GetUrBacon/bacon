@@ -1,49 +1,32 @@
 #!/usr/bin/env python3
 """
 bacon-fetch — called by the UserPromptSubmit hook on every Claude Code request.
-Fetches the winning ad from the auction API and returns it as additionalContext.
-Falls back silently (no output, exit 0) if the network is unavailable or
-the user is unauthenticated, so it never blocks Claude Code.
+Selects the winning ad from the local client-side auction and returns it as
+additionalContext. Falls back silently (no output, exit 0) on any error so it
+never blocks Claude Code. Zero network on the hot path.
 """
 
 import json
 import os
+import re
 import sys
 import time
-import hashlib
-import subprocess
 from pathlib import Path
-import urllib.request
-import urllib.error
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bacon_core
 
 CONFIG_DIR = Path.home() / ".bacon"
-CONFIG_FILE = CONFIG_DIR / "config.json"
-CACHE_FILE = CONFIG_DIR / "ad_cache.json"
 FREQUENCY_DEFAULT = 10  # show ad every N prompts
 COUNTER_FILE = CONFIG_DIR / "counter"
-AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
 SIGNAL_FILE = CONFIG_DIR / "signals.json"
-TIMEOUT_MS = 600  # resolve within this or skip (fail-open). Stopgap: the remote
-# backend is ~360ms warm / ~1s cold, so 80ms always skipped. 600ms catches warm
-# requests and fails open on cold starts. Superseded once the auction moves
-# client-side (zero network on this hot path) — see docs/latency_architecture.md.
-
-
-def impression_url_from(auction_url):
-    """Derive the /v1/impression endpoint from the configured auction URL."""
-    base = auction_url.rstrip("/")
-    if base.endswith("/v1/auction"):
-        return base[: -len("/v1/auction")] + "/v1/impression"
-    # Fallback: swap the default auction URL's suffix
-    default_base = AUCTION_URL_DEFAULT.rstrip("/")[: -len("/v1/auction")]
-    return default_base + "/v1/impression"
 
 
 def load_config():
-    if not CONFIG_FILE.exists():
+    if not (CONFIG_DIR / "config.json").exists():
         return None
     try:
-        return json.loads(CONFIG_FILE.read_text())
+        return json.loads((CONFIG_DIR / "config.json").read_text())
     except Exception:
         return None
 
@@ -108,10 +91,6 @@ def get_intent_signals():
         return []
 
 
-# Intent patterns applied to the prompt text directly (chat-style prompts that
-# never trigger a tool call still get targeted ads). Mirrors bacon-signal.
-import re
-
 PROMPT_INTENT_PATTERNS = [
     (r"auth|oauth|jwt|login|signup|password|sign.?in", "intent_auth"),
     (r"postgres|mysql|sqlite|mongodb|redis|prisma|database|\bdb\b|orm", "intent_database"),
@@ -140,37 +119,6 @@ def read_prompt_from_stdin():
         return data.get("prompt", "")
     except Exception:
         return ""
-
-
-def fetch_ad(config, signals):
-    """Call auction API. Must return within TIMEOUT_MS or return None."""
-    auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
-
-    payload = json.dumps({
-        "user_id": config.get("user_id"),
-        "profile_tier": config.get("profile_tier", "anonymous"),
-        "frequency_tier": config.get("frequency_tier", "standard"),
-        "signals": signals,
-    }).encode()
-
-    req = urllib.request.Request(
-        auction_url,
-        data=payload,
-        headers={"Content-Type": "application/json",
-                 "X-Bacon-Version": "0.1.0"},
-        method="POST",
-    )
-
-    try:
-        timeout_sec = TIMEOUT_MS / 1000
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            data = json.loads(resp.read())
-            if not data.get("ad_text"):
-                return None
-            return data  # full ad object: ad_text, tier, logo, tagline, url, advertiser
-    except Exception:
-        # Any failure (network, timeout, server error) → silent skip
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -226,36 +174,34 @@ def main():
     if not should_show_ad(config):
         sys.exit(0)
 
-    prompt_text = read_prompt_from_stdin()
+    prompt = read_prompt_from_stdin()
 
-    signals = get_context_signals()
-    # Combine tool-derived signals (from bacon-signal) with prompt-text signals
-    signals["intent"] = get_intent_signals() + detect_prompt_intent(prompt_text)
-    ad = fetch_ad(config, signals)
+    # Build intent label set from signal file + prompt text
+    raw_signals = get_intent_signals() + detect_prompt_intent(prompt)
+    intent_labels = {
+        s["label"] for s in raw_signals
+        if isinstance(s, dict) and s.get("label")
+    }
 
-    if not ad:
+    campaigns = bacon_core.load_campaigns()
+    winner = bacon_core.select_winner(campaigns, intent_labels)
+    if not winner:
+        bacon_core.spawn_refill()
         sys.exit(0)
 
-    impression_id = ad.get("impression_id")
+    tok = bacon_core.pop_token()
+    if not tok:
+        bacon_core.spawn_refill()
+        sys.exit(0)
 
-    # Write ad to cache so statusline/session surfaces can read it
-    try:
-        CONFIG_DIR.mkdir(exist_ok=True)
-        cache_entry = dict(ad)
-        cache_entry["ts"] = time.time()
-        CACHE_FILE.write_text(json.dumps(cache_entry))
-    except Exception:
-        pass
-
-    tier = ad.get("tier", "strip")
-
-    # Build the ad block Claude should render, based on tier.
+    # Pick renderer by tier
+    tier = winner.get("tier", "strip")
     if tier == "card":
-        ad_block = render_card(ad)
-    elif tier == "marquee":  # premium static banner
-        ad_block = render_banner(ad)
-    else:  # strip
-        ad_block = render_strip(ad)
+        ad_block = render_card(winner)
+    elif tier == "marquee":
+        ad_block = render_banner(winner)
+    else:
+        ad_block = render_strip(winner)
 
     instruction = (
         "[Bacon ad network] A sponsor is relevant to this conversation. "
@@ -272,32 +218,18 @@ def main():
     # Print hook output FIRST — Claude must never be delayed by reporting
     print(json.dumps(output))
 
-    # Fire-and-forget: report the context impression in a detached child process
-    if impression_id:
-        try:
-            auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
-            imp_url = impression_url_from(auction_url)
-            reporter = Path(__file__).parent / "bacon-report"
-            report_payload = json.dumps({
-                "impression_id": impression_id,
-                "impression_token": ad.get("impression_token", ""),
-                "user_id": config.get("user_id"),
-                "advertiser": ad.get("advertiser", ""),
-                "surface": "context",
-                "impression_url": imp_url,
-            }).encode()
-            proc = subprocess.Popen(
-                [sys.executable, str(reporter)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            proc.stdin.write(report_payload)
-            proc.stdin.close()
-            # Do NOT wait() or communicate() — detached, hot path exits immediately
-        except Exception:
-            pass
+    # Buffer the impression report locally — zero network
+    bacon_core.buffer_report({
+        "user_id": config.get("user_id"),
+        "impression_id": tok["impression_id"],
+        "impression_token": tok["token"],
+        "campaign_id": winner["id"],
+        "surface": "context",
+    })
+
+    # Trigger background refill if running low
+    if bacon_core.tokens_low(config) or bacon_core.campaigns_stale(config):
+        bacon_core.spawn_refill()
 
 
 if __name__ == "__main__":

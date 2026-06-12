@@ -69,23 +69,10 @@ print("\n" + "=" * 70)
 print("Running tests")
 print("=" * 70 + "\n")
 
-# --- Test 1: impression_url_from with default auction URL ---
-result = sl.impression_url_from("https://api.geturbacon.dev/v1/auction")
-expected = "https://api.geturbacon.dev/v1/impression"
-test("test_impression_url_from_default", result == expected)
+# URL derivation moved to bacon_core (covered by tests/test-client-core.py);
+# the statusline only renders + buffers reports now.
 
-# --- Test 2: impression_url_from with localhost ---
-result = sl.impression_url_from("http://127.0.0.1:8799/v1/auction")
-expected = "http://127.0.0.1:8799/v1/impression"
-test("test_impression_url_from_localhost", result == expected)
-
-# --- Test 3: impression_url_from with fallback (weird URL) ---
-result = sl.impression_url_from("https://x.example/weird")
-# Should fallback to default base + /v1/impression
-expected_suffix = "/v1/impression"
-test("test_impression_url_from_fallback", result.endswith(expected_suffix))
-
-# --- Test 4: osc8 with URL ---
+# --- osc8 with URL ---
 result = sl.osc8("https://zaplogin.dev", "ZapLogin")
 has_text = "ZapLogin" in result
 has_url = "https://zaplogin.dev" in result

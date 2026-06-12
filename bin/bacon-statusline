@@ -15,11 +15,15 @@ Usage (Claude Code statusline command):  bacon-statusline
 Demo (print N frames as a filmstrip):    bacon-statusline --demo 12
 """
 
-import sys
 import json
+import os
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bacon_core
 
 CONFIG_DIR = Path.home() / ".bacon"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -28,9 +32,7 @@ SL_AD_FILE = CONFIG_DIR / "statusline_ad.json"
 SL_VIEW_FILE = CONFIG_DIR / "sl_view.json"
 BALANCE_FILE = CONFIG_DIR / "balance.json"
 
-AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
-
-# How many consecutive renders of the same impression before reporting a view
+# How many consecutive renders of the same impression before buffering a view
 VIEW_THRESHOLD_FRAMES = 3
 
 # ANSI
@@ -98,15 +100,6 @@ def load_balance():
         return None
 
 
-def impression_url_from(auction_url):
-    """Derive /v1/impression from the configured auction URL."""
-    base = (auction_url or AUCTION_URL_DEFAULT).rstrip("/")
-    if base.endswith("/v1/auction"):
-        return base[: -len("/v1/auction")] + "/v1/impression"
-    default_base = AUCTION_URL_DEFAULT.rstrip("/")[: -len("/v1/auction")]
-    return default_base + "/v1/impression"
-
-
 # ---------------------------------------------------------------------------
 # Tick / frame counter
 # ---------------------------------------------------------------------------
@@ -157,14 +150,14 @@ STYLES = {"marquee": frame_marquee, "sweep": frame_sweep, "pulse": frame_pulse}
 
 
 # ---------------------------------------------------------------------------
-# View-threshold tracker (network-free)
+# View-threshold tracker (zero network)
 # ---------------------------------------------------------------------------
 
 def maybe_report_view(ad, config):
     """
     Track per-impression render count in sl_view.json.
-    When n == VIEW_THRESHOLD_FRAMES, spawn bacon-report detached.
-    The reporter deduplicates by impression_id so extra spawns are harmless.
+    When n == VIEW_THRESHOLD_FRAMES, buffer the report via bacon_core.
+    The buffer deduplicates by impression_id so extra calls are harmless.
     Always fail-open.
     """
     try:
@@ -193,28 +186,15 @@ def maybe_report_view(ad, config):
         except Exception:
             pass
 
-        # Fire reporter at the threshold
+        # Buffer the report at the threshold (once per impression_id)
         if n == VIEW_THRESHOLD_FRAMES:
-            auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
-            imp_url = impression_url_from(auction_url)
-            reporter = Path(__file__).parent / "bacon-report"
-            report_payload = json.dumps({
+            bacon_core.buffer_report({
+                "user_id": config.get("user_id"),
                 "impression_id": impression_id,
                 "impression_token": ad.get("impression_token", ""),
-                "user_id": config.get("user_id"),
-                "advertiser": ad.get("advertiser", ""),
+                "campaign_id": ad.get("campaign_id", ""),
                 "surface": "statusline",
-                "impression_url": imp_url,
-            }).encode()
-            proc = subprocess.Popen(
-                [sys.executable, str(reporter)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            proc.stdin.write(report_payload)
-            proc.stdin.close()
+            })
     except Exception:
         pass  # never break the statusline
 
@@ -334,7 +314,7 @@ def main():
 
     print(segment)
 
-    # View-threshold reporting (detached, after printing so render is never delayed)
+    # View-threshold reporting (buffered locally, after printing so render is never delayed)
     maybe_report_view(ad, config)
 
 
