@@ -1,0 +1,22 @@
+{
+  "name": "GetUrBacon",
+  "owner": {
+    "name": "Bacon",
+    "email": "hello@geturbacon.dev"
+  },
+  "description": "Get paid to code. Earn revenue from contextual ads while you use Claude Code.",
+  "plugins": [
+    {
+      "name": "bacon",
+      "source": {
+        "source": "github",
+        "repo": "GetUrBacon/bacon"
+      },
+      "description": "Earn revenue from contextual ads while you code — your AI subscription pays for itself.",
+      "homepage": "https://geturbacon.dev",
+      "repository": "https://github.com/GetUrBacon/bacon",
+      "license": "MIT",
+      "keywords": ["bacon", "ads", "monetization", "revenue", "developer"]
+    }
+  ]
+}
