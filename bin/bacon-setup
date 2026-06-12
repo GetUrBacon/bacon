@@ -55,6 +55,7 @@ SPINNER_BACKUP = BACON_DIR / "spinner_backup.json"
 SPINNER_AD_FILE = BACON_DIR / "spinner_ad.json"
 
 STATUSLINE_BIN = str(Path(__file__).resolve().parent / "bacon-statusline")
+STATUSLINE_SH  = str(Path(__file__).resolve().parent / "bacon-statusline-sh")
 
 
 def _pkce_pair():
@@ -109,9 +110,8 @@ def load_json(p, default):
 
 def bacon_command(style, wrap=None):
     """Build the statusLine.command string for our script."""
-    cmd = f'python3 "{STATUSLINE_BIN}" --style {style}'
+    cmd = f'BACON_STATUSLINE_STYLE={style} "{STATUSLINE_SH}"'
     if wrap:
-        # Escape any double-quotes in the wrapped command
         safe = wrap.replace('"', '\\"')
         cmd += f' --wrap "{safe}"'
     return cmd
@@ -291,7 +291,7 @@ def cmd_statusline_enable(style):
     settings["statusLine"] = {
         "type": "command",
         "command": bacon_command(style, wrap=wrap_cmd),
-        "refreshInterval": 1,
+        "refreshInterval": 3,
     }
     CLAUDE_SETTINGS.write_text(json.dumps(settings, indent=2))
     print(f"✅ Bacon statusline enabled (style={style}). "

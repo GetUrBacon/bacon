@@ -1,0 +1,49 @@
+#!/bin/sh
+# bacon-statusline-sh — fast-path shell wrapper for the Claude Code statusLine.
+#
+# Claude Code spawns this every refreshInterval seconds. Instead of paying
+# Python startup cost on every tick, we:
+#   1. cat the pre-rendered frame file (near-instant)
+#   2. every REGEN_EVERY ticks, spawn Python detached to recompute the frame
+#
+# The Python process writes ~/.bacon/sl_frame; the next shell tick reads it.
+# First-run (no frame file): falls through to Python synchronously so the
+# statusline is never blank on startup.
+
+BACON_DIR="$HOME/.bacon"
+FRAME="$BACON_DIR/sl_frame"
+TICK_FILE="$BACON_DIR/sl_sh_tick"
+STYLE="${BACON_STATUSLINE_STYLE:-marquee}"
+REGEN_EVERY=5   # recompute frame every N shell ticks (~15s at refreshInterval=3)
+
+# Find the Python script relative to this shell script
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PY="$SCRIPT_DIR/bacon-statusline"
+
+# ------------------------------------------------------------------
+# Tick counter
+# ------------------------------------------------------------------
+tick=0
+if [ -f "$TICK_FILE" ]; then
+    tick=$(cat "$TICK_FILE" 2>/dev/null || echo 0)
+fi
+tick=$((tick + 1))
+printf '%s' "$tick" > "$TICK_FILE"
+
+# ------------------------------------------------------------------
+# Fast path: serve cached frame, regenerate detached every N ticks
+# ------------------------------------------------------------------
+if [ -f "$FRAME" ]; then
+    cat "$FRAME"
+    # Regenerate frame in background every REGEN_EVERY ticks
+    remainder=$((tick % REGEN_EVERY))
+    if [ "$remainder" -eq 0 ]; then
+        python3 "$PY" --style "$STYLE" "$@" > "$FRAME" 2>/dev/null &
+    fi
+    exit 0
+fi
+
+# ------------------------------------------------------------------
+# Slow path (first run / frame missing): run Python synchronously
+# ------------------------------------------------------------------
+python3 "$PY" --style "$STYLE" "$@"

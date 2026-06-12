@@ -28,6 +28,7 @@ import bacon_core
 CONFIG_DIR = Path.home() / ".bacon"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STATE = CONFIG_DIR / "sl_tick"
+FRAME_FILE = CONFIG_DIR / "sl_frame"   # pre-rendered frame for fast-path shell cat
 SL_AD_FILE = CONFIG_DIR / "statusline_ad.json"
 SL_VIEW_FILE = CONFIG_DIR / "sl_view.json"
 BALANCE_FILE = CONFIG_DIR / "balance.json"
@@ -313,6 +314,12 @@ def main():
             pass
 
     print(segment)
+
+    # Cache the rendered frame so the shell fast-path can cat it next tick
+    try:
+        FRAME_FILE.write_text(segment)
+    except Exception:
+        pass
 
     # View-threshold reporting (buffered locally, after printing so render is never delayed)
     maybe_report_view(ad, config)
