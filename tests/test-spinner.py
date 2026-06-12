@@ -18,8 +18,10 @@ BACON_SESSION = BIN / "bacon-session"
 # Read the bacon-session file and execute it to get the functions
 bacon_session_code = BACON_SESSION.read_text()
 
-# Create a namespace to hold the functions
-bs_namespace = {}
+# Create a namespace to hold the functions. Provide __file__ + bin on sys.path
+# so the module's `import bacon_core` shim (which uses __file__) resolves.
+sys.path.insert(0, str(BIN))
+bs_namespace = {"__file__": str(BACON_SESSION), "__name__": "bacon_session_under_test"}
 
 # Execute the bacon-session code (skips main() since we're not __main__)
 exec(bacon_session_code, bs_namespace)
@@ -27,7 +29,7 @@ exec(bacon_session_code, bs_namespace)
 # Extract the functions we need
 is_our_verb = bs_namespace['is_our_verb']
 build_verb = bs_namespace['build_verb']
-impression_url_from = bs_namespace['impression_url_from']
+# URL derivation moved to bacon_core (see tests/test-client-core.py)
 
 # =========================================================================
 # Test Cases
@@ -107,20 +109,6 @@ def test_build_verb_fallback_adtext():
     print("  ✓ test_build_verb_fallback_adtext: PASS")
 
 
-def test_impression_url_from():
-    """
-    impression_url_from("http://127.0.0.1:8799/v1/auction")
-    should return "http://127.0.0.1:8799/v1/impression".
-    """
-    auction_url = "http://127.0.0.1:8799/v1/auction"
-    expected = "http://127.0.0.1:8799/v1/impression"
-    result = impression_url_from(auction_url)
-
-    assert result == expected, f"Expected {expected}, got {result}"
-
-    print("  ✓ test_impression_url_from: PASS")
-
-
 # =========================================================================
 # Main
 # =========================================================================
@@ -136,7 +124,6 @@ def main():
         test_is_our_verb_none,
         test_build_verb_has_marker,
         test_build_verb_fallback_adtext,
-        test_impression_url_from,
     ]
 
     passed = 0

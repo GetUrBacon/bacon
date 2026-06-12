@@ -13,9 +13,9 @@ Accounting model (boot-lag):
 
 Steps:
   1. Read config; skip entirely unless active + spinner_enabled.
-  2. REPORT: read ~/.bacon/spinner_ad.json; if it has impression data, fire
-     bacon-report detached so last session's displayed verb is credited.
-  3. ROTATE: auction surface=spinner, write the winning verb into
+  2. REPORT: read ~/.bacon/spinner_ad.json; if it has impression data, buffer
+     the report via bacon_core so last session's displayed verb is credited.
+  3. ROTATE: select surface=spinner locally, write the winning verb into
      ~/.claude/settings.json under "spinnerVerbs", save ad to spinner_ad.json.
 """
 
@@ -23,10 +23,10 @@ import json
 import os
 import sys
 import time
-import subprocess
 from pathlib import Path
 
-import urllib.request
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bacon_core
 
 CONFIG_DIR = Path.home() / ".bacon"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -34,22 +34,10 @@ SPINNER_AD_FILE = CONFIG_DIR / "spinner_ad.json"
 SPINNER_BACKUP_FILE = CONFIG_DIR / "spinner_backup.json"
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 
-AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
-SPINNER_TIMEOUT = 0.8  # 800 ms — generous; we're not on the hot path
-
 
 # ---------------------------------------------------------------------------
-# Helpers (mirrored from bacon-fetch)
+# Helpers
 # ---------------------------------------------------------------------------
-
-def impression_url_from(auction_url):
-    """Derive the /v1/impression endpoint from the configured auction URL."""
-    base = auction_url.rstrip("/")
-    if base.endswith("/v1/auction"):
-        return base[: -len("/v1/auction")] + "/v1/impression"
-    default_base = AUCTION_URL_DEFAULT.rstrip("/")[: -len("/v1/auction")]
-    return default_base + "/v1/impression"
-
 
 def load_config():
     try:
@@ -65,100 +53,55 @@ def load_json_file(path, default=None):
         return default
 
 
-def get_context_signals():
-    """Read project signals without touching prompt content."""
-    signals = {
-        "os": sys.platform,
-        "hour": time.localtime().tm_hour,
-    }
-    cwd = Path.cwd()
-    for dep_file in ["package.json", "go.mod", "requirements.txt",
-                     "Cargo.toml", "pyproject.toml", "composer.json"]:
-        if (cwd / dep_file).exists():
-            signals["dep_file"] = dep_file
-            break
-    try:
-        exts = [f.suffix for f in cwd.iterdir() if f.is_file() and f.suffix]
-        if exts:
-            signals["ext"] = max(set(exts), key=exts.count)
-    except Exception:
-        pass
-    return signals
-
-
 # ---------------------------------------------------------------------------
-# Step 1 — Report the impression for last session's displayed verb
+# Step 1 — Buffer the report for last session's displayed verb
 # ---------------------------------------------------------------------------
 
 def report_last_impression(config):
-    """Fire bacon-report detached for the ad that was displayed last session."""
+    """Buffer a report for the ad that was displayed last session."""
     ad = load_json_file(SPINNER_AD_FILE)
     if not ad:
         return
     impression_id = ad.get("impression_id")
     impression_token = ad.get("impression_token")
-    if not impression_id or not impression_token:
+    campaign_id = ad.get("campaign_id")
+    if not impression_id or not impression_token or not campaign_id:
         return
 
-    try:
-        auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
-        imp_url = impression_url_from(auction_url)
-        reporter = Path(__file__).parent / "bacon-report"
-        report_payload = json.dumps({
-            "impression_id": impression_id,
-            "impression_token": impression_token,
-            "user_id": config.get("user_id"),
-            "advertiser": ad.get("advertiser", ""),
-            "surface": "spinner",
-            "impression_url": imp_url,
-        }).encode()
-        proc = subprocess.Popen(
-            [sys.executable, str(reporter)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        proc.stdin.write(report_payload)
-        proc.stdin.close()
-        # Do NOT wait() — fully detached
-    except Exception:
-        pass
+    bacon_core.buffer_report({
+        "user_id": config.get("user_id"),
+        "impression_id": impression_id,
+        "impression_token": impression_token,
+        "campaign_id": campaign_id,
+        "surface": "spinner",
+    })
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — Auction a fresh spinner ad and rotate into settings.json
+# Step 2 — Select a fresh spinner ad locally and rotate into settings.json
 # ---------------------------------------------------------------------------
 
 def auction_spinner(config):
-    """POST to auction API for surface=spinner. Returns ad dict or None."""
-    auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
-    signals = get_context_signals()
-    signals["intent"] = []
-
-    payload = json.dumps({
-        "user_id": config.get("user_id"),
-        "profile_tier": config.get("profile_tier", "anonymous"),
-        "frequency_tier": config.get("frequency_tier", "standard"),
-        "surface": "spinner",
-        "signals": signals,
-    }).encode()
-
-    req = urllib.request.Request(
-        auction_url,
-        data=payload,
-        headers={"Content-Type": "application/json",
-                 "X-Bacon-Version": "0.1.0"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=SPINNER_TIMEOUT) as resp:
-            data = json.loads(resp.read())
-            if not data.get("ad_text"):
-                return None
-            return data
-    except Exception:
+    """Select a winner from the local campaign cache for surface=spinner.
+    Returns a combined ad dict (campaign fields + token fields), or None."""
+    campaigns = bacon_core.load_campaigns()
+    # Spinner has no prompt intent — use untargeted / highest-priority selection
+    winner = bacon_core.select_winner(campaigns, set())
+    if not winner:
+        bacon_core.spawn_refill()
         return None
+
+    tok = bacon_core.pop_token()
+    if not tok:
+        bacon_core.spawn_refill()
+        return None
+
+    return {
+        **winner,
+        "campaign_id":      winner["id"],
+        "impression_id":    tok["impression_id"],
+        "impression_token": tok["token"],
+    }
 
 
 def build_verb(ad):
@@ -219,13 +162,14 @@ def save_spinner_ad(ad):
     try:
         CONFIG_DIR.mkdir(exist_ok=True)
         entry = {
-            "ad_text": ad.get("ad_text", ""),
-            "impression_id": ad.get("impression_id", ""),
+            "ad_text":          ad.get("ad_text", ""),
+            "advertiser":       ad.get("advertiser", ""),
+            "tagline":          ad.get("tagline", ""),
+            "url":              ad.get("url", ""),
+            "campaign_id":      ad.get("campaign_id", ""),
+            "impression_id":    ad.get("impression_id", ""),
             "impression_token": ad.get("impression_token", ""),
-            "advertiser": ad.get("advertiser", ""),
-            "tagline": ad.get("tagline", ""),
-            "url": ad.get("url", ""),
-            "ts": time.time(),
+            "ts":               time.time(),
         }
         SPINNER_AD_FILE.write_text(json.dumps(entry, indent=2))
     except Exception:
@@ -252,10 +196,10 @@ def main():
     if not config.get("spinner_enabled", False):
         sys.exit(0)
 
-    # Step 1 — Report last session's displayed verb (fire-and-forget)
+    # Step 1 — Buffer last session's displayed verb report
     report_last_impression(config)
 
-    # Step 2 — Auction fresh spinner ad and rotate settings.json
+    # Step 2 — Select fresh spinner ad and rotate settings.json
     ad = auction_spinner(config)
     if not ad:
         sys.exit(0)
@@ -266,6 +210,9 @@ def main():
         save_spinner_ad(ad)
     except Exception:
         pass
+
+    if bacon_core.tokens_low(config) or bacon_core.campaigns_stale(config):
+        bacon_core.spawn_refill()
 
     sys.exit(0)
 
