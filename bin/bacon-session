@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""
+bacon-session — SessionStart hook handler for the spinnerVerbs ad surface.
+
+Called by Claude Code at session boot. Fail-open: any exception → exit 0.
+Never blocks CC startup.
+
+Accounting model (boot-lag):
+  - spinnerVerbs written now takes effect on the NEXT CC boot.
+  - So we first REPORT the impression for the verb set LAST time (it is the
+    verb actually displayed in the session now running), then AUCTION a fresh
+    verb for the session that follows.
+
+Steps:
+  1. Read config; skip entirely unless active + spinner_enabled.
+  2. REPORT: read ~/.bacon/spinner_ad.json; if it has impression data, fire
+     bacon-report detached so last session's displayed verb is credited.
+  3. ROTATE: auction surface=spinner, write the winning verb into
+     ~/.claude/settings.json under "spinnerVerbs", save ad to spinner_ad.json.
+"""
+
+import json
+import os
+import sys
+import time
+import subprocess
+from pathlib import Path
+
+import urllib.request
+
+CONFIG_DIR = Path.home() / ".bacon"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+SPINNER_AD_FILE = CONFIG_DIR / "spinner_ad.json"
+SPINNER_BACKUP_FILE = CONFIG_DIR / "spinner_backup.json"
+CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+
+AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+SPINNER_TIMEOUT = 0.8  # 800 ms — generous; we're not on the hot path
+
+
+# ---------------------------------------------------------------------------
+# Helpers (mirrored from bacon-fetch)
+# ---------------------------------------------------------------------------
+
+def impression_url_from(auction_url):
+    """Derive the /v1/impression endpoint from the configured auction URL."""
+    base = auction_url.rstrip("/")
+    if base.endswith("/v1/auction"):
+        return base[: -len("/v1/auction")] + "/v1/impression"
+    default_base = AUCTION_URL_DEFAULT.rstrip("/")[: -len("/v1/auction")]
+    return default_base + "/v1/impression"
+
+
+def load_config():
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except Exception:
+        return None
+
+
+def load_json_file(path, default=None):
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return default
+
+
+def get_context_signals():
+    """Read project signals without touching prompt content."""
+    signals = {
+        "os": sys.platform,
+        "hour": time.localtime().tm_hour,
+    }
+    cwd = Path.cwd()
+    for dep_file in ["package.json", "go.mod", "requirements.txt",
+                     "Cargo.toml", "pyproject.toml", "composer.json"]:
+        if (cwd / dep_file).exists():
+            signals["dep_file"] = dep_file
+            break
+    try:
+        exts = [f.suffix for f in cwd.iterdir() if f.is_file() and f.suffix]
+        if exts:
+            signals["ext"] = max(set(exts), key=exts.count)
+    except Exception:
+        pass
+    return signals
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — Report the impression for last session's displayed verb
+# ---------------------------------------------------------------------------
+
+def report_last_impression(config):
+    """Fire bacon-report detached for the ad that was displayed last session."""
+    ad = load_json_file(SPINNER_AD_FILE)
+    if not ad:
+        return
+    impression_id = ad.get("impression_id")
+    impression_token = ad.get("impression_token")
+    if not impression_id or not impression_token:
+        return
+
+    try:
+        auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
+        imp_url = impression_url_from(auction_url)
+        reporter = Path(__file__).parent / "bacon-report"
+        report_payload = json.dumps({
+            "impression_id": impression_id,
+            "impression_token": impression_token,
+            "user_id": config.get("user_id"),
+            "advertiser": ad.get("advertiser", ""),
+            "surface": "spinner",
+            "impression_url": imp_url,
+        }).encode()
+        proc = subprocess.Popen(
+            [sys.executable, str(reporter)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        proc.stdin.write(report_payload)
+        proc.stdin.close()
+        # Do NOT wait() — fully detached
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — Auction a fresh spinner ad and rotate into settings.json
+# ---------------------------------------------------------------------------
+
+def auction_spinner(config):
+    """POST to auction API for surface=spinner. Returns ad dict or None."""
+    auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
+    signals = get_context_signals()
+    signals["intent"] = []
+
+    payload = json.dumps({
+        "user_id": config.get("user_id"),
+        "profile_tier": config.get("profile_tier", "anonymous"),
+        "frequency_tier": config.get("frequency_tier", "standard"),
+        "surface": "spinner",
+        "signals": signals,
+    }).encode()
+
+    req = urllib.request.Request(
+        auction_url,
+        data=payload,
+        headers={"Content-Type": "application/json",
+                 "X-Bacon-Version": "0.1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=SPINNER_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+            if not data.get("ad_text"):
+                return None
+            return data
+    except Exception:
+        return None
+
+
+def build_verb(ad):
+    """Build the single spinner verb string shown as CC's 'thinking' text."""
+    advertiser = ad.get("advertiser", "")
+    tagline = ad.get("tagline") or ad.get("ad_text", "")
+    # Keep it short and distinctive with the bacon emoji prefix
+    return f"🥓 {advertiser} — {tagline} ↗"
+
+
+def is_our_verb(value):
+    """Detect a spinnerVerbs value that we wrote (vs the user's own).
+
+    ensure_ascii=False keeps the 🥓 marker literal — with default ascii escaping
+    it becomes \\ud83e\\udd53 and this test would never match our own writes,
+    causing us to back up our own verb as the 'user original' and then restore
+    it on disable (the ad would survive disable).
+    """
+    if not value:
+        return False
+    return "🥓" in json.dumps(value, ensure_ascii=False)
+
+
+def write_spinner_verb(verb):
+    """
+    Write verb into ~/.claude/settings.json under spinnerVerbs.
+    Back up any pre-existing user value once to spinner_backup.json
+    (only if it does not look like our own previous write).
+    Preserves all other keys.
+    """
+    # Load or create settings
+    if CLAUDE_SETTINGS.exists():
+        try:
+            settings = json.loads(CLAUDE_SETTINGS.read_text())
+        except Exception:
+            settings = {}
+    else:
+        CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        settings = {}
+
+    existing_sv = settings.get("spinnerVerbs")
+
+    # Back up the user's original spinnerVerbs once if it's not ours
+    if existing_sv is not None and not is_our_verb(existing_sv):
+        if not SPINNER_BACKUP_FILE.exists():
+            try:
+                CONFIG_DIR.mkdir(exist_ok=True)
+                SPINNER_BACKUP_FILE.write_text(json.dumps(existing_sv, indent=2))
+            except Exception:
+                pass
+
+    settings["spinnerVerbs"] = {"mode": "replace", "verbs": [verb]}
+    CLAUDE_SETTINGS.write_text(json.dumps(settings, indent=2))
+
+
+def save_spinner_ad(ad):
+    """Persist the fresh ad to spinner_ad.json for next session's reporting."""
+    try:
+        CONFIG_DIR.mkdir(exist_ok=True)
+        entry = {
+            "ad_text": ad.get("ad_text", ""),
+            "impression_id": ad.get("impression_id", ""),
+            "impression_token": ad.get("impression_token", ""),
+            "advertiser": ad.get("advertiser", ""),
+            "tagline": ad.get("tagline", ""),
+            "url": ad.get("url", ""),
+            "ts": time.time(),
+        }
+        SPINNER_AD_FILE.write_text(json.dumps(entry, indent=2))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    # Read SessionStart stdin payload; tolerate empty / non-JSON
+    try:
+        raw = sys.stdin.read()
+        _session_info = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        _session_info = {}
+
+    config = load_config()
+    if not config:
+        sys.exit(0)
+    if not config.get("active", False):
+        sys.exit(0)
+    if not config.get("spinner_enabled", False):
+        sys.exit(0)
+
+    # Step 1 — Report last session's displayed verb (fire-and-forget)
+    report_last_impression(config)
+
+    # Step 2 — Auction fresh spinner ad and rotate settings.json
+    ad = auction_spinner(config)
+    if not ad:
+        sys.exit(0)
+
+    try:
+        verb = build_verb(ad)
+        write_spinner_verb(verb)
+        save_spinner_ad(ad)
+    except Exception:
+        pass
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        sys.exit(0)

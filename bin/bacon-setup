@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bacon-setup — first-run onboarding + statusline management.
+bacon-setup — first-run onboarding + statusline/spinner management.
 
 Most settings (frequency/profile/surface/blocklist) are handled by bacon-config.
 bacon-setup owns the things bacon-config doesn't:
@@ -8,6 +8,8 @@ bacon-setup owns the things bacon-config doesn't:
   - the CONSENTED edit to ~/.claude/settings.json to enable the statusline ad
     (wrap-don't-clobber: preserves any existing statusline)
   - clean uninstall (restores the original statusline)
+  - the CONSENTED edit to ~/.claude/settings.json to enable the spinnerVerbs ad
+    (the "thinking" verb surface; written per-session by the SessionStart hook)
 
 Commands:
   bacon-setup status                 show whether Bacon is configured + active
@@ -19,7 +21,12 @@ Commands:
                                      Claude Code status bar — no ads injected
                                      into Claude's replies when using this mode.
   bacon-setup statusline-disable     restore the original statusline
-  bacon-setup uninstall              disable statusline + deactivate config
+  bacon-setup spinner-enable [--style default]
+                                     enable the spinnerVerbs thinking-verb ad;
+                                     the verb appears from the next CC session
+  bacon-setup spinner-disable        disable the spinner ad, restore original
+                                     spinnerVerbs (if any)
+  bacon-setup uninstall              disable all surfaces + deactivate config
 
 This command edits the user's ~/.claude/settings.json. It is meant to be run BY
 THE USER (or with explicit consent), never silently.
@@ -33,6 +40,8 @@ BACON_DIR = Path.home() / ".bacon"
 CONFIG_FILE = BACON_DIR / "config.json"
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 SL_BACKUP = BACON_DIR / "statusline_backup.json"
+SPINNER_BACKUP = BACON_DIR / "spinner_backup.json"
+SPINNER_AD_FILE = BACON_DIR / "spinner_ad.json"
 
 STATUSLINE_BIN = str(Path(__file__).resolve().parent / "bacon-statusline")
 
@@ -73,6 +82,7 @@ def cmd_status():
         except (ValueError, IndexError):
             pass
 
+    spinner_on = cfg.get("spinner_enabled", False)
     print("🥓 Bacon setup status")
     print(f"  Config:     {'✅ present' if cfg else '❌ missing'}")
     print(f"  Active:     {cfg.get('active')}")
@@ -83,6 +93,7 @@ def cmd_status():
     else:
         print("  Statusline: ❌ not enabled  "
               "(run: bacon-setup statusline-enable)")
+    print(f"  Spinner:    {'✅ enabled' if spinner_on else '❌ not enabled'}")
 
 
 def cmd_init(user_id):
@@ -150,8 +161,54 @@ def cmd_statusline_disable():
     CLAUDE_SETTINGS.write_text(json.dumps(settings, indent=2))
 
 
+def cmd_spinner_enable(style):  # noqa: ARG001 — style accepted for symmetry, ignored
+    """Enable the spinnerVerbs ad surface (thinking-verb ad)."""
+    if not CONFIG_FILE.exists():
+        print("Bacon is not set up. Run: bacon-setup init first.")
+        return
+    cfg = load_json(CONFIG_FILE, {})
+    if cfg.get("spinner_enabled"):
+        print("Bacon spinner already enabled.")
+        return
+    cfg["spinner_enabled"] = True
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    print("✅ Bacon spinner (thinking-verb ad) enabled.")
+    print("   The sponsored thinking verb will appear from your next Claude Code session.")
+    print("   To disable: bacon-setup spinner-disable")
+
+
+def cmd_spinner_disable():
+    """Disable the spinnerVerbs ad surface and restore any original value."""
+    cfg = load_json(CONFIG_FILE, {})
+    if cfg:
+        cfg["spinner_enabled"] = False
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+
+    # Restore settings.json spinnerVerbs
+    if CLAUDE_SETTINGS.exists():
+        settings = load_json(CLAUDE_SETTINGS, {})
+        if SPINNER_BACKUP.exists():
+            original_sv = load_json(SPINNER_BACKUP, None)
+            if original_sv is not None:
+                settings["spinnerVerbs"] = original_sv
+                print("✅ Restored your original spinnerVerbs.")
+            SPINNER_BACKUP.unlink(missing_ok=True)
+        else:
+            settings.pop("spinnerVerbs", None)
+            print("✅ Removed Bacon spinnerVerbs (you had none before).")
+        CLAUDE_SETTINGS.write_text(json.dumps(settings, indent=2))
+
+    # Clean up spinner state files
+    for f in (SPINNER_BACKUP, SPINNER_AD_FILE):
+        try:
+            f.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def cmd_uninstall():
     cmd_statusline_disable()
+    cmd_spinner_disable()
     cfg = load_json(CONFIG_FILE, {})
     if cfg:
         cfg["active"] = False
@@ -174,6 +231,10 @@ def main():
         cmd_statusline_enable(opt("--style", "marquee"))
     elif cmd == "statusline-disable":
         cmd_statusline_disable()
+    elif cmd == "spinner-enable":
+        cmd_spinner_enable(opt("--style", "default"))
+    elif cmd == "spinner-disable":
+        cmd_spinner_disable()
     elif cmd == "uninstall":
         cmd_uninstall()
     else:
