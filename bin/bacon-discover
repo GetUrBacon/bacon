@@ -16,7 +16,10 @@ import urllib.request
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".bacon"
-DISCOVER_URL = "https://api.bacon.dev/v1/discover"
+# Default backend (live on Railway). Overridable via config auction_url so the
+# discover endpoint always tracks the same backend as the other surfaces.
+DISCOVER_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/discover"
+AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
 
 
 def load_config():
@@ -29,7 +32,16 @@ def load_config():
         return None
 
 
-def fetch_suggestion(problem: str, category: str, user_id: str) -> dict:
+def discover_url(config: dict) -> str:
+    """Derive the /v1/discover endpoint from the configured auction_url so it
+    follows the same backend as bacon-fetch et al.; fall back to the default."""
+    auction = (config or {}).get("auction_url", AUCTION_URL_DEFAULT).rstrip("/")
+    if auction.endswith("/v1/auction"):
+        return auction[: -len("/v1/auction")] + "/v1/discover"
+    return DISCOVER_URL_DEFAULT
+
+
+def fetch_suggestion(problem: str, category: str, user_id: str, url: str) -> dict:
     payload = json.dumps({
         "user_id": user_id,
         "problem": problem,        # e.g. "setting up authentication"
@@ -37,7 +49,7 @@ def fetch_suggestion(problem: str, category: str, user_id: str) -> dict:
     }).encode()
 
     req = urllib.request.Request(
-        DISCOVER_URL,
+        url,
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -57,7 +69,7 @@ def handle_tool_call(tool_name: str, tool_input: dict, config: dict) -> str:
     category = tool_input.get("category", "general")
     user_id = config.get("user_id", "anon")
 
-    result = fetch_suggestion(problem, category, user_id)
+    result = fetch_suggestion(problem, category, user_id, discover_url(config))
 
     if not result or not result.get("sponsor"):
         return json.dumps({"suggestion": None})
