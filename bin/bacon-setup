@@ -240,6 +240,7 @@ def cmd_status():
     spinner_on = cfg.get("spinner_enabled", False)
     print("🥓 Bacon setup status")
     print(f"  Config:     {'✅ present' if cfg else '❌ missing'}")
+    print(f"  Onboarded:  {'✅ yes' if cfg.get('onboarded') else '❌ no (preferences not chosen)'}")
     print(f"  Active:     {cfg.get('active')}")
     print(f"  Surface:    {cfg.get('surface')}")
     if sl_on:
@@ -263,8 +264,23 @@ def cmd_init(user_id=None):
     cfg.setdefault("surface", "cards")
     cfg.setdefault("blocked_categories", [])
     cfg.setdefault("blocked_advertisers", [])
+    # Bootstrap leaves onboarding incomplete — the /bacon:setup skill runs the
+    # preferences picker, then calls `bacon-setup onboarded` to flip this true.
+    cfg.setdefault("onboarded", False)
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
     print(f"✅ Config ready at {CONFIG_FILE} (user_id={cfg['user_id']})")
+
+
+def cmd_onboarded():
+    """Mark onboarding complete (called by the /bacon:setup skill after the user
+    picks preferences). Idempotent."""
+    if not CONFIG_FILE.exists():
+        print("Bacon is not set up. Run: bacon-setup init first.")
+        return
+    cfg = load_json(CONFIG_FILE, {})
+    cfg["onboarded"] = True
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    print("✅ Onboarding complete.")
 
 
 def cmd_statusline_enable(style):
@@ -391,6 +407,8 @@ def main():
         cmd_spinner_enable(opt("--style", "default"))
     elif cmd == "spinner-disable":
         cmd_spinner_disable()
+    elif cmd == "onboarded":
+        cmd_onboarded()
     elif cmd == "uninstall":
         cmd_uninstall()
     elif cmd == "login":

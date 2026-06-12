@@ -9,11 +9,13 @@ CLIs at `${CLAUDE_PLUGIN_ROOT}/bin/`: `bacon-setup` `bacon-config` `bacon-earnin
 
 ## Flow
 
-**Step 1 — Check if already set up**
+**Step 1 — Check current state**
 `python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-setup status && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-earnings summary`
-If active, show status + offer `/bacon:config`. Stop here.
+- If status shows `Onboarded: ✅ yes` → already configured. Show status + offer `/bacon:config`. Stop here.
+- If `Onboarded: ❌ no` (the wizard initialized config but the user hasn't picked preferences yet) → continue to Step 3, skip init.
+- If config is missing entirely → run Step 2 first.
 
-**Step 2 — Init**
+**Step 2 — Init (only if config missing)**
 `python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-setup init`
 
 **Step 3 — Preferences (ONE AskUserQuestion call, all 4 questions at once)**
@@ -26,8 +28,9 @@ If active, show status + offer `/bacon:config`. Stop here.
 `python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config frequency <x> && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config profile <x> && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config surface <x>`
 If blocked by auto mode, show command with `!` prefix for user to run directly.
 
-**Step 5 — Confirm**
-`python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config show`
+**Step 5 — Confirm & mark complete**
+`python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config show && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-setup onboarded`
+This flips the `onboarded` flag so re-running `/bacon:setup` won't repeat the picker.
 
 ## Notes
 - Statusline ads require a one-time edit to `~/.claude/settings.json` — only via `bacon-setup statusline-enable`, never directly. Offer it after setup completes with explicit consent.
