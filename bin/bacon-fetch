@@ -13,6 +13,8 @@ import time
 import hashlib
 import subprocess
 from pathlib import Path
+import urllib.request
+import urllib.error
 
 CONFIG_DIR = Path.home() / ".bacon"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -22,6 +24,16 @@ COUNTER_FILE = CONFIG_DIR / "counter"
 AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
 SIGNAL_FILE = CONFIG_DIR / "signals.json"
 TIMEOUT_MS = 80  # must resolve within 80ms or skip
+
+
+def impression_url_from(auction_url):
+    """Derive the /v1/impression endpoint from the configured auction URL."""
+    base = auction_url.rstrip("/")
+    if base.endswith("/v1/auction"):
+        return base[: -len("/v1/auction")] + "/v1/impression"
+    # Fallback: swap the default auction URL's suffix
+    default_base = AUCTION_URL_DEFAULT.rstrip("/")[: -len("/v1/auction")]
+    return default_base + "/v1/impression"
 
 
 def load_config():
@@ -129,9 +141,6 @@ def read_prompt_from_stdin():
 
 def fetch_ad(config, signals):
     """Call auction API. Must return within TIMEOUT_MS or return None."""
-    import urllib.request
-    import urllib.error
-
     auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
 
     payload = json.dumps({
@@ -224,6 +233,17 @@ def main():
     if not ad:
         sys.exit(0)
 
+    impression_id = ad.get("impression_id")
+
+    # Write ad to cache so statusline/session surfaces can read it
+    try:
+        CONFIG_DIR.mkdir(exist_ok=True)
+        cache_entry = dict(ad)
+        cache_entry["ts"] = time.time()
+        CACHE_FILE.write_text(json.dumps(cache_entry))
+    except Exception:
+        pass
+
     tier = ad.get("tier", "strip")
 
     # Build the ad block Claude should render, based on tier.
@@ -246,7 +266,35 @@ def main():
             "additionalContext": instruction,
         }
     }
+    # Print hook output FIRST — Claude must never be delayed by reporting
     print(json.dumps(output))
+
+    # Fire-and-forget: report the context impression in a detached child process
+    if impression_id:
+        try:
+            auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
+            imp_url = impression_url_from(auction_url)
+            reporter = Path(__file__).parent / "bacon-report"
+            report_payload = json.dumps({
+                "impression_id": impression_id,
+                "impression_token": ad.get("impression_token", ""),
+                "user_id": config.get("user_id"),
+                "advertiser": ad.get("advertiser", ""),
+                "surface": "context",
+                "impression_url": imp_url,
+            }).encode()
+            proc = subprocess.Popen(
+                [sys.executable, str(reporter)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            proc.stdin.write(report_payload)
+            proc.stdin.close()
+            # Do NOT wait() or communicate() — detached, hot path exits immediately
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
