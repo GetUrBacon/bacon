@@ -19,14 +19,18 @@ CLIs at `${CLAUDE_PLUGIN_ROOT}/bin/`: `bacon-setup` `bacon-config` `bacon-earnin
 `python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-setup init`
 
 **Step 3 — Preferences (ONE AskUserQuestion call, all 4 questions at once)**
-- Frequency: Minimal (~$0.75/mo) / Standard (~$1.50/mo) / More (~$3/mo) / Max (~$7.50/mo) / Every (~$15/mo)
+- Frequency: Minimal (~$0.40/mo) / Standard (~$0.75/mo) / More (~$1.50/mo) / Max (~$3.75/mo) / Every (~$7.50/mo)
 - Personalization: Anonymous / Stack only / Full — more sharing = more relevant ads (may earn more via better targeting); prompts/code/keys NEVER shared
-- Surface: Strip only / Cards+Banners
+- Surfaces (MULTI-SELECT — where ads may appear): In replies (default) / Statusline / Thinking verb. Note: you don't pick the in-reply format (strip/card/banner) — the advertiser's campaign sets it.
 - Block categories (multi-select): crypto / food / ai / payments / infra / or Nothing
 
-**Step 4 — Apply in ONE bash call**
-`python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config frequency <x> && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config profile <x> && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config surface <x>`
-If blocked by auto mode, show command with `!` prefix for user to run directly.
+**Step 4 — Apply**
+Frequency/profile/blocks via bacon-config (ONE bash call):
+`python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config frequency <x> && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config profile <x> && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config inreply <on|off>`
+(`inreply on` if "In replies" was selected, else `off`.)
+Then, ONLY for each extra surface the user selected (these edit `~/.claude/settings.json`, so auto mode may block them — offer the `!` fallback):
+- Statusline → `python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-setup statusline-enable --style marquee`
+- Thinking verb → `python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-setup spinner-enable`
 
 **Step 5 — Confirm & mark complete**
 `python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-config show && python3 ${CLAUDE_PLUGIN_ROOT}/bin/bacon-setup onboarded`

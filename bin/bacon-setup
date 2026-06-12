@@ -242,7 +242,7 @@ def cmd_status():
     print(f"  Config:     {'✅ present' if cfg else '❌ missing'}")
     print(f"  Onboarded:  {'✅ yes' if cfg.get('onboarded') else '❌ no (preferences not chosen)'}")
     print(f"  Active:     {cfg.get('active')}")
-    print(f"  Surface:    {cfg.get('surface')}")
+    print(f"  In-reply:   {'✅ on' if cfg.get('inreply_enabled', True) else '❌ off'}")
     if sl_on:
         style_str = f"  (style: {sl_style})" if sl_style else ""
         print(f"  Statusline: ✅ enabled{style_str}")

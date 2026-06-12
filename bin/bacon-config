@@ -3,19 +3,24 @@
 bacon-config — developer control over the ads they see.
 
 The config lives at ~/.bacon/config.json and governs what bacon-fetch requests
-and renders. Five controls:
+and renders. Controls:
 
   frequency      how often ads show          minimal|standard|more|max|every
   profile        targeting data shared        anonymous|stack|full
-  surface        ad footprint                 strip|cards|statusline|both
+  inreply        in-reply ad surface          on|off  (format is set by the
+                                              advertiser's campaign, not you)
   block/unblock  mute categories/advertisers  e.g. crypto, food, ZapLogin
   pause/resume   master on/off switch
+
+The statusline and spinner ("thinking verb") surfaces are separate opt-ins that
+edit ~/.claude/settings.json — enable them via `bacon-setup statusline-enable`
+and `bacon-setup spinner-enable`.
 
 Usage:
   bacon-config show
   bacon-config frequency <minimal|standard|more|max|every>
   bacon-config profile   <anonymous|stack|full>
-  bacon-config surface   <strip|cards|statusline|both>
+  bacon-config inreply   <on|off>
   bacon-config block     <category-or-advertiser>
   bacon-config unblock   <category-or-advertiser>
   bacon-config pause
@@ -31,7 +36,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 FREQ_MAP = {"minimal": 20, "standard": 10, "more": 5, "max": 2, "every": 1}
 PROFILE_TIERS = ["anonymous", "stack", "full"]
-SURFACES = ["strip", "cards", "statusline", "both"]
+CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 
 # Rough earnings estimate baseline at 500 prompts/day — for show output.
 # Deliberately tier-independent: payout derives from the advertiser's bid (server
@@ -46,7 +51,7 @@ DEFAULTS = {
     "frequency_tier": "standard",
     "frequency": 10,
     "profile_tier": "anonymous",
-    "surface": "cards",
+    "inreply_enabled": True,
     "blocked_categories": [],
     "blocked_advertisers": [],
     "cache_ttl_sec": 600,
@@ -82,6 +87,14 @@ def est_monthly(freq_tier):
     return per_day * 30 / 1000 * BASE_CPM * 0.5  # developer 50% cut
 
 
+def statusline_on():
+    """True if the Bacon statusline is wired into ~/.claude/settings.json."""
+    try:
+        return "bacon-statusline" in CLAUDE_SETTINGS.read_text()
+    except Exception:
+        return False
+
+
 def cmd_show(cfg):
     print("🥓 Bacon — your ad settings")
     print("─" * 42)
@@ -89,10 +102,15 @@ def cmd_show(cfg):
     print(f"  Status:       {state}")
     print(f"  Frequency:    {cfg['frequency_tier']} (1 per {cfg['frequency']} prompts)")
     print(f"  Profile:      {cfg['profile_tier']}")
-    print(f"  Surface:      {cfg['surface']}")
+    print("  Surfaces:")
+    print(f"    In-reply:   {'on' if cfg.get('inreply_enabled', True) else 'off'}  "
+          f"(format chosen by the advertiser)")
+    print(f"    Statusline: {'on' if statusline_on() else 'off'}  "
+          f"(bacon-setup statusline-enable)")
+    print(f"    Spinner:    {'on' if cfg.get('spinner_enabled') else 'off'}  "
+          f"(bacon-setup spinner-enable)")
     bc = ", ".join(cfg["blocked_categories"]) or "none"
     ba = ", ".join(cfg["blocked_advertisers"]) or "none"
-    print(f"  Spinner:      {'on' if cfg.get('spinner_enabled') else 'off'}")
     print(f"  Blocked cats: {bc}")
     print(f"  Blocked advs: {ba}")
     print("─" * 42)
@@ -125,20 +143,18 @@ def cmd_profile(cfg, val):
           f"better-targeted campaigns. Your prompts/code are never shared.")
 
 
-def cmd_surface(cfg, val):
-    if val not in SURFACES:
-        print(f"Invalid. Choose: {', '.join(SURFACES)}"); return
-    cfg["surface"] = val
+def cmd_inreply(cfg, val):
+    val = val.strip().lower()
+    if val not in ("on", "off"):
+        print("Invalid. Choose: on | off"); return
+    cfg["inreply_enabled"] = (val == "on")
     save(cfg)
-    note = {
-        "strip": "one-line ads in replies only",
-        "cards": "boxed cards/banners allowed in replies",
-        "statusline": "statusline only — never in Claude's replies (privacy-clean)",
-        "both": "in replies + animated statusline",
-    }[val]
-    print(f"✅ Surface → {val} ({note})")
-    if val in ("statusline", "both"):
-        print("  ⚠️  To activate the statusline, also run: bacon-setup statusline-enable")
+    if val == "on":
+        print("✅ In-reply ads → on. Format (strip/card/banner) is set by the "
+              "advertiser's campaign, not a setting you pick.")
+    else:
+        print("✅ In-reply ads → off. Enable statusline/spinner surfaces with "
+              "bacon-setup statusline-enable / spinner-enable.")
 
 
 def cmd_block(cfg, val, on):
@@ -178,7 +194,7 @@ def main():
     arg = rest[0] if rest else ""
     if cmd == "frequency": cmd_frequency(cfg, arg)
     elif cmd == "profile": cmd_profile(cfg, arg)
-    elif cmd == "surface": cmd_surface(cfg, arg)
+    elif cmd == "inreply": cmd_inreply(cfg, arg)
     elif cmd == "block": cmd_block(cfg, arg, on=True)
     elif cmd == "unblock": cmd_block(cfg, arg, on=False)
     elif cmd == "pause": cmd_pause(cfg, active=False)

@@ -171,6 +171,11 @@ def main():
     if not config or not config.get("active", False):
         sys.exit(0)
 
+    # In-reply is its own opt-in surface (default on). A user can run
+    # statusline/spinner-only by turning this off while staying active.
+    if not config.get("inreply_enabled", True):
+        sys.exit(0)
+
     if not should_show_ad(config):
         sys.exit(0)
 
