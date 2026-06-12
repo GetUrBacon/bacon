@@ -135,7 +135,18 @@ def cmd_login():
             return None
 
         verifier, challenge = _pkce_pair()
-        port = _free_port()
+        # Fixed port required — Clerk OAuth apps need exact redirect_uri match
+        for port in [7891, 7892, 7893]:
+            try:
+                import socket as _s
+                with _s.socket() as _sock:
+                    _sock.bind(("127.0.0.1", port))
+                break
+            except OSError:
+                continue
+        else:
+            print("⚠️  Could not bind to ports 7891-7893. Using anonymous ID.")
+            return None
         redirect_uri = f"http://127.0.0.1:{port}/callback"
 
         params = urllib.parse.urlencode({
