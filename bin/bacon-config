@@ -45,6 +45,7 @@ DEFAULTS = {
     "surface": "cards",
     "blocked_categories": [],
     "blocked_advertisers": [],
+    "cache_ttl_sec": 600,
 }
 
 

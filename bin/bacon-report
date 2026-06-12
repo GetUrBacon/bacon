@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""
+bacon-report — fire-and-forget impression reporter.
+
+Reads a JSON payload from stdin:
+  {"impression_id", "impression_token", "user_id", "advertiser", "surface", "impression_url"}
+
+POSTs to impression_url to credit the developer exactly once.
+Deduplicates via ~/.bacon/reported.json so retries are safe.
+Fully fail-open: any exception → silent exit 0.
+"""
+
+import json
+import sys
+import time
+from pathlib import Path
+
+CONFIG_DIR = Path.home() / ".bacon"
+REPORTED_FILE = CONFIG_DIR / "reported.json"
+REPORT_TIMEOUT = 0.8  # 800 ms — detached from hot path, slightly generous
+MAX_STORED_IDS = 500
+
+
+def load_reported():
+    try:
+        if REPORTED_FILE.exists():
+            data = json.loads(REPORTED_FILE.read_text())
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return list(data.keys())
+    except Exception:
+        pass
+    return []
+
+
+def save_reported(ids):
+    try:
+        CONFIG_DIR.mkdir(exist_ok=True)
+        # Cap to last MAX_STORED_IDS to avoid unbounded growth
+        trimmed = ids[-MAX_STORED_IDS:]
+        REPORTED_FILE.write_text(json.dumps(trimmed))
+    except Exception:
+        pass
+
+
+def main():
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw)
+    except Exception:
+        sys.exit(0)
+
+    impression_id = payload.get("impression_id")
+    impression_token = payload.get("impression_token", "")
+    user_id = payload.get("user_id")
+    advertiser = payload.get("advertiser", "")
+    surface = payload.get("surface", "context")
+    impression_url = payload.get("impression_url")
+
+    # token is required by the server to confirm; without it the POST would be
+    # denied, so skip rather than waste a request.
+    if not impression_id or not impression_url or not impression_token:
+        sys.exit(0)
+
+    # Deduplicate — skip if already reported
+    reported = load_reported()
+    if impression_id in reported:
+        sys.exit(0)
+
+    # POST to impression endpoint
+    try:
+        import urllib.request
+        import urllib.error
+
+        body = json.dumps({
+            "user_id": user_id,
+            "impression_id": impression_id,
+            "impression_token": impression_token,  # required to confirm
+            "advertiser": advertiser,
+            "cpm": 0.0,  # server ignores client-supplied cpm
+            "surface": surface,
+        }).encode()
+
+        req = urllib.request.Request(
+            impression_url,
+            data=body,
+            headers={"Content-Type": "application/json",
+                     "X-Bacon-Version": "0.1.0"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=REPORT_TIMEOUT) as resp:
+            status = resp.status
+    except Exception:
+        # Transient failure — do NOT record; allow retry next time
+        sys.exit(0)
+
+    # Only record as reported on 2xx so transient failures can be retried
+    if 200 <= status < 300:
+        reported.append(impression_id)
+        save_reported(reported)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        sys.exit(0)
