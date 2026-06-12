@@ -7,13 +7,20 @@ description: Set up Bacon — create config, choose ad preferences via interacti
 First-run onboarding. Gets a developer from "plugin installed" to "earning" using the
 same interactive multi-step picker as /bacon:config, plus the consented statusline edit.
 
-CLIs (use `${CLAUDE_PLUGIN_ROOT}/bin/...`, fall back to
-`/Users/oscar-rivas/Github/bacon/bin/...` for local testing):
-- `bacon-setup`   — config bootstrap, statusline enable/disable, uninstall
+CLIs (use `${CLAUDE_PLUGIN_ROOT}/bin/...`):
+- `bacon-setup`   — config bootstrap, statusline enable/disable, uninstall, login
+- `bacon-setup login` — connect Clerk account
 - `bacon-config`  — frequency / profile / surface / blocklist writes
 - `bacon-earnings` — status readout
 
 ## Flow
+
+0. **Connect account**
+   Check `~/.bacon/config.json`: if `user_id` starts with `user_` (Clerk format), already connected — skip to step 1.
+   Otherwise run `bacon-setup login`. This opens the browser automatically — the user clicks Allow and the Clerk user_id is stored with no further input needed.
+   - On success: `✅ Account connected as <user_id>`
+   - On failure (cancelled, network error): `⚠️ Using anonymous ID — connect later with bacon-setup login`
+   Fail-open: setup continues either way.
 
 1. **Already set up?**
    Run `bacon-setup status`. If config exists and is active, show `/bacon:earnings`
