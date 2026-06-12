@@ -124,7 +124,7 @@ def cmd_login():
     """
     try:
         # Fetch OAuth config from the live backend (no hardcoded values in plugin source)
-        config_url = "https://bacon-backend-production.up.railway.app/v1/auth/config"
+        config_url = "https://api.geturbacon.dev/v1/auth/config"
         config_req = urllib.request.Request(
             config_url,
             headers={"User-Agent": "bacon-setup/1.0 (CLI login)"},

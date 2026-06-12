@@ -112,7 +112,7 @@ def test_base_url_default():
     global tests_passed, tests_failed
     test_names.append("test_base_url_default")
     try:
-        default_base = "https://bacon-backend-production.up.railway.app"
+        default_base = "https://api.geturbacon.dev"
         base = b.base_url({})
         assert base == default_base, f"Expected '{default_base}', got '{base}'"
 

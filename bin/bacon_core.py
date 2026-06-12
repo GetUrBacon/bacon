@@ -27,7 +27,7 @@ CAMPAIGNS_FILE = CONFIG_DIR / "campaigns.json"   # {"ts": float, "campaigns": [.
 TOKENS_FILE  = CONFIG_DIR / "tokens.json"        # list of {"impression_id","token"}
 REPORTS_FILE = CONFIG_DIR / "reports.jsonl"      # one JSON object per line
 
-AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
+AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
 
 
 # ---------------------------------------------------------------------------
