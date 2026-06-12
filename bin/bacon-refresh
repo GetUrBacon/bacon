@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""
+bacon-refresh — detached, fail-open auction refresher for non-context surfaces.
+
+Fetches a fresh ad from the auction API for a given surface and writes the
+result to ~/.bacon/<surface>_ad.json. Called by bacon-statusline when the
+cached ad is stale or missing; always runs detached and never blocks the caller.
+
+Usage:
+  bacon-refresh --surface statusline
+"""
+
+import json
+import sys
+import time
+from pathlib import Path
+import urllib.request
+
+CONFIG_DIR = Path.home() / ".bacon"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+TIMEOUT_SEC = 0.8  # 800 ms
+
+
+def load_config():
+    try:
+        if not CONFIG_FILE.exists():
+            return None
+        return json.loads(CONFIG_FILE.read_text())
+    except Exception:
+        return None
+
+
+def get_context_signals():
+    """Lightweight context signals (no prompt text — not available here)."""
+    signals = {
+        "os": sys.platform,
+        "hour": time.localtime().tm_hour,
+        "intent": [],  # statusline has no prompt intent
+    }
+
+    cwd = Path.cwd()
+
+    for dep_file in ["package.json", "go.mod", "requirements.txt",
+                     "Cargo.toml", "pyproject.toml", "composer.json"]:
+        if (cwd / dep_file).exists():
+            signals["dep_file"] = dep_file
+            break
+
+    try:
+        exts = [f.suffix for f in cwd.iterdir() if f.is_file() and f.suffix]
+        if exts:
+            signals["ext"] = max(set(exts), key=exts.count)
+    except Exception:
+        pass
+
+    return signals
+
+
+def main():
+    args = sys.argv[1:]
+
+    # Parse --surface
+    surface = "statusline"
+    if "--surface" in args:
+        idx = args.index("--surface")
+        if idx + 1 < len(args):
+            surface = args[idx + 1]
+
+    config = load_config()
+    if not config or not config.get("active", False):
+        sys.exit(0)
+
+    signals = get_context_signals()
+
+    auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
+
+    payload = json.dumps({
+        "user_id": config.get("user_id"),
+        "profile_tier": config.get("profile_tier", "anonymous"),
+        "frequency_tier": config.get("frequency_tier", "standard"),
+        "signals": signals,
+        "surface": surface,
+    }).encode()
+
+    req = urllib.request.Request(
+        auction_url,
+        data=payload,
+        headers={"Content-Type": "application/json",
+                 "X-Bacon-Version": "0.1.0"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        sys.exit(0)
+
+    if not data.get("ad_text"):
+        sys.exit(0)
+
+    # Write surface-specific ad cache
+    try:
+        CONFIG_DIR.mkdir(exist_ok=True)
+        cache = {
+            "ad_text":          data.get("ad_text", ""),
+            "impression_id":    data.get("impression_id", ""),
+            "impression_token": data.get("impression_token", ""),
+            "advertiser":       data.get("advertiser", ""),
+            "tier":             data.get("tier", "strip"),
+            "logo":             data.get("logo", ""),
+            "tagline":          data.get("tagline", ""),
+            "url":              data.get("url", ""),
+            "ts":               time.time(),
+        }
+        cache_file = CONFIG_DIR / f"{surface}_ad.json"
+        cache_file.write_text(json.dumps(cache))
+    except Exception:
+        pass
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        sys.exit(0)

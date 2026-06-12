@@ -14,7 +14,10 @@ Commands:
   bacon-setup init [--user-id X]     create ~/.bacon/config.json with defaults
   bacon-setup statusline-enable [--style marquee|sweep|pulse]
                                      add Bacon to ~/.claude/settings.json,
-                                     wrapping any existing statusline
+                                     wrapping any existing statusline. The
+                                     animated sponsor segment appears in the
+                                     Claude Code status bar — no ads injected
+                                     into Claude's replies when using this mode.
   bacon-setup statusline-disable     restore the original statusline
   bacon-setup uninstall              disable statusline + deactivate config
 
@@ -58,12 +61,28 @@ def cmd_status():
         return
     settings = load_json(CLAUDE_SETTINGS, {})
     sl = settings.get("statusLine", {})
+    sl_cmd = sl.get("command", "") if isinstance(sl, dict) else ""
     sl_on = "bacon-statusline" in json.dumps(sl)
+
+    # Extract configured style from the command string if present
+    sl_style = None
+    if sl_on and "--style" in sl_cmd:
+        parts = sl_cmd.split()
+        try:
+            sl_style = parts[parts.index("--style") + 1]
+        except (ValueError, IndexError):
+            pass
+
     print("🥓 Bacon setup status")
     print(f"  Config:     {'✅ present' if cfg else '❌ missing'}")
     print(f"  Active:     {cfg.get('active')}")
     print(f"  Surface:    {cfg.get('surface')}")
-    print(f"  Statusline: {'✅ enabled' if sl_on else '❌ not enabled'}")
+    if sl_on:
+        style_str = f"  (style: {sl_style})" if sl_style else ""
+        print(f"  Statusline: ✅ enabled{style_str}")
+    else:
+        print("  Statusline: ❌ not enabled  "
+              "(run: bacon-setup statusline-enable)")
 
 
 def cmd_init(user_id):

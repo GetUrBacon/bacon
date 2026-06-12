@@ -92,6 +92,10 @@ def main():
 
         with urllib.request.urlopen(req, timeout=REPORT_TIMEOUT) as resp:
             status = resp.status
+            try:
+                resp_body = json.loads(resp.read())
+            except Exception:
+                resp_body = {}
     except Exception:
         # Transient failure — do NOT record; allow retry next time
         sys.exit(0)
@@ -100,6 +104,17 @@ def main():
     if 200 <= status < 300:
         reported.append(impression_id)
         save_reported(reported)
+
+        # Persist returned balance so statusline can display it network-free
+        if "balance" in resp_body:
+            try:
+                balance_file = CONFIG_DIR / "balance.json"
+                balance_file.write_text(json.dumps({
+                    "balance": resp_body["balance"],
+                    "ts": time.time(),
+                }))
+            except Exception:
+                pass
 
     sys.exit(0)
 
