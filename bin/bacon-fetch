@@ -23,7 +23,10 @@ FREQUENCY_DEFAULT = 10  # show ad every N prompts
 COUNTER_FILE = CONFIG_DIR / "counter"
 AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
 SIGNAL_FILE = CONFIG_DIR / "signals.json"
-TIMEOUT_MS = 80  # must resolve within 80ms or skip
+TIMEOUT_MS = 600  # resolve within this or skip (fail-open). Stopgap: the remote
+# backend is ~360ms warm / ~1s cold, so 80ms always skipped. 600ms catches warm
+# requests and fails open on cold starts. Superseded once the auction moves
+# client-side (zero network on this hot path) — see docs/latency_architecture.md.
 
 
 def impression_url_from(auction_url):
