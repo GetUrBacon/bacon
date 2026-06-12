@@ -110,17 +110,33 @@ def campaigns_stale(config: dict) -> bool:
 # Client-side auction
 # ---------------------------------------------------------------------------
 
-def select_winner(campaigns: list, intent_labels) -> dict | None:
+def select_winner(campaigns: list, intent_labels, config: dict | None = None) -> dict | None:
     """
     Port of the server-side auction, run entirely client-side.
 
     intent_labels — set or list of label strings e.g. {"intent_auth"}.
+    config        — optional config dict; when provided, campaigns whose
+                    ``category`` appears in ``blocked_categories`` are
+                    excluded before the auction runs.
 
     Priority 1 = highest bidder (smallest number wins).
     """
     try:
         if not campaigns:
             return None
+
+        # Apply blocked_categories filter from local config (fail-open).
+        blocked = set()
+        if config:
+            try:
+                blocked = set(config.get("blocked_categories") or [])
+            except Exception:
+                pass
+        if blocked:
+            campaigns = [c for c in campaigns if c.get("category", "") not in blocked]
+        if not campaigns:
+            return None
+
         labels = set(intent_labels)
         targeted = [
             c for c in campaigns

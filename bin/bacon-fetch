@@ -184,7 +184,7 @@ def main():
     }
 
     campaigns = bacon_core.load_campaigns()
-    winner = bacon_core.select_winner(campaigns, intent_labels)
+    winner = bacon_core.select_winner(campaigns, intent_labels, config)
     if not winner:
         bacon_core.spawn_refill()
         sys.exit(0)

@@ -81,9 +81,10 @@ try:
     needed = target - count
     if needed > 0:
         user_id = config.get("user_id")
+        profile_tier = config.get("profile_tier", "anonymous")
         status, resp_data = _http_post(
             b.tokens_url(config),
-            {"user_id": user_id, "n": needed},
+            {"user_id": user_id, "n": needed, "profile_tier": profile_tier},
             timeout=2.0,
         )
         if 200 <= status < 300:
