@@ -17,32 +17,115 @@ Demo (print N frames as a filmstrip):    bacon-statusline --demo 12
 
 import sys
 import json
+import subprocess
+import time
 from pathlib import Path
 
-STATE = Path.home() / ".bacon" / "sl_tick"
+CONFIG_DIR = Path.home() / ".bacon"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+STATE = CONFIG_DIR / "sl_tick"
+SL_AD_FILE = CONFIG_DIR / "statusline_ad.json"
+SL_VIEW_FILE = CONFIG_DIR / "sl_view.json"
+BALANCE_FILE = CONFIG_DIR / "balance.json"
+
+AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+
+# How many consecutive renders of the same impression before reporting a view
+VIEW_THRESHOLD_FRAMES = 3
 
 # ANSI
 DIM = "\033[2m"; BOLD = "\033[1m"; RESET = "\033[0m"
 YEL = "\033[93m"; CYAN = "\033[96m"; GRN = "\033[92m"; ORANGE = "\033[38;5;208m"
 
-# The currently-serving sponsor (would come from the auction in production)
-SPONSOR = {
+# OSC 8 hyperlink sequences
+def osc8(url, text):
+    """Wrap text in an OSC 8 hyperlink (terminal-clickable link)."""
+    if not url:
+        return text
+    ESC = "\033"
+    return f"{ESC}]8;;{url}{ESC}\\{text}{ESC}]8;;{ESC}\\"
+
+# Demo fixture — only used when --demo is passed
+DEMO_SPONSOR = {
     "logo": "☕",
     "name": "BYTE & BREW",
     "tagline": "the dev cafe · bottomless cold brew · byteandbrew.cafe",
+    "url": "",
 }
 
 WINDOW = 34  # visible character window for the scrolling marquee
 
+
+# ---------------------------------------------------------------------------
+# Config / cache helpers
+# ---------------------------------------------------------------------------
+
+def load_config():
+    try:
+        if not CONFIG_FILE.exists():
+            return {}
+        return json.loads(CONFIG_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def load_statusline_ad():
+    """Return the cached statusline ad dict, or None if missing/unreadable."""
+    try:
+        if not SL_AD_FILE.exists():
+            return None
+        return json.loads(SL_AD_FILE.read_text())
+    except Exception:
+        return None
+
+
+def is_fresh(ad, ttl):
+    """True if ad was written within ttl seconds."""
+    try:
+        return (time.time() - ad["ts"]) <= ttl
+    except Exception:
+        return False
+
+
+def load_balance():
+    """Return balance float from cache, or None."""
+    try:
+        if not BALANCE_FILE.exists():
+            return None
+        data = json.loads(BALANCE_FILE.read_text())
+        return data.get("balance")
+    except Exception:
+        return None
+
+
+def impression_url_from(auction_url):
+    """Derive /v1/impression from the configured auction URL."""
+    base = (auction_url or AUCTION_URL_DEFAULT).rstrip("/")
+    if base.endswith("/v1/auction"):
+        return base[: -len("/v1/auction")] + "/v1/impression"
+    default_base = AUCTION_URL_DEFAULT.rstrip("/")[: -len("/v1/auction")]
+    return default_base + "/v1/impression"
+
+
+# ---------------------------------------------------------------------------
+# Tick / frame counter
+# ---------------------------------------------------------------------------
 
 def next_tick():
     try:
         t = int(STATE.read_text().strip())
     except Exception:
         t = 0
-    STATE.write_text(str(t + 1))
+    try:
+        STATE.write_text(str(t + 1))
+    except Exception:
+        pass
     return t
 
+
+# ---------------------------------------------------------------------------
+# Frame renderers
+# ---------------------------------------------------------------------------
 
 def frame_marquee(tick, sp):
     """Scroll the tagline through a fixed window."""
@@ -67,11 +150,97 @@ def frame_pulse(tick, sp):
     cycle = ["\033[2m", "\033[0m", "\033[1m", "\033[1;93m", "\033[1m", "\033[0m"]
     style = cycle[tick % len(cycle)]
     return (f"{ORANGE}🥓 Sponsored{RESET} {sp['logo']} "
-            f"{style}{sp['name']}{RESET} {DIM}· byteandbrew.cafe{RESET}")
+            f"{style}{sp['name']}{RESET} {DIM}· {sp['tagline']}{RESET}")
 
 
 STYLES = {"marquee": frame_marquee, "sweep": frame_sweep, "pulse": frame_pulse}
 
+
+# ---------------------------------------------------------------------------
+# View-threshold tracker (network-free)
+# ---------------------------------------------------------------------------
+
+def maybe_report_view(ad, config):
+    """
+    Track per-impression render count in sl_view.json.
+    When n == VIEW_THRESHOLD_FRAMES, spawn bacon-report detached.
+    The reporter deduplicates by impression_id so extra spawns are harmless.
+    Always fail-open.
+    """
+    try:
+        impression_id = ad.get("impression_id", "")
+        if not impression_id:
+            return
+
+        # Load current view state
+        try:
+            view = json.loads(SL_VIEW_FILE.read_text()) if SL_VIEW_FILE.exists() else {}
+        except Exception:
+            view = {}
+
+        stored_id = view.get("impression_id", "")
+        n = view.get("n", 0)
+
+        if stored_id != impression_id:
+            # New impression — reset counter
+            n = 1
+        else:
+            n += 1
+
+        # Persist updated state
+        try:
+            SL_VIEW_FILE.write_text(json.dumps({"impression_id": impression_id, "n": n}))
+        except Exception:
+            pass
+
+        # Fire reporter at the threshold
+        if n == VIEW_THRESHOLD_FRAMES:
+            auction_url = config.get("auction_url", AUCTION_URL_DEFAULT)
+            imp_url = impression_url_from(auction_url)
+            reporter = Path(__file__).parent / "bacon-report"
+            report_payload = json.dumps({
+                "impression_id": impression_id,
+                "impression_token": ad.get("impression_token", ""),
+                "user_id": config.get("user_id"),
+                "advertiser": ad.get("advertiser", ""),
+                "surface": "statusline",
+                "impression_url": imp_url,
+            }).encode()
+            proc = subprocess.Popen(
+                [sys.executable, str(reporter)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            proc.stdin.write(report_payload)
+            proc.stdin.close()
+    except Exception:
+        pass  # never break the statusline
+
+
+# ---------------------------------------------------------------------------
+# Detached refresher spawn
+# ---------------------------------------------------------------------------
+
+def spawn_refresh():
+    """Spawn bacon-refresh --surface statusline detached. Fail-open."""
+    try:
+        refresher = Path(__file__).parent / "bacon-refresh"
+        subprocess.Popen(
+            [sys.executable, str(refresher), "--surface", "statusline"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     args = sys.argv[1:]
@@ -87,7 +256,7 @@ def main():
         for label, fn in STYLES.items():
             print(f"\n=== style: {label} ({n} frames, 1 per second live) ===")
             for t in range(n):
-                print(f"  t{t:<2} {fn(t, SPONSOR)}")
+                print(f"  t{t:<2} {fn(t, DEMO_SPONSOR)}")
         return
 
     # Read the session JSON Claude Code passes on stdin (needed to forward to a
@@ -102,8 +271,8 @@ def main():
     # --wrap "<command>": run the user's existing statusline first, print its
     # output, then append the Bacon segment. This is how we add to a statusline
     # without clobbering the user's context/git/cost display.
+    wrapped_original = None
     if "--wrap" in args:
-        import subprocess
         inner = args[args.index("--wrap") + 1]
         # shell=True is intentional and matches Claude Code's own behavior: a
         # statusLine.command is a shell-string (e.g. "cd $dir && git branch"),
@@ -113,15 +282,64 @@ def main():
         try:
             proc = subprocess.run(inner, shell=True, input=stdin_data,  # noqa: S602
                                   capture_output=True, text=True, timeout=3)
-            original = proc.stdout.rstrip("\n")
-            if original:
-                print(original)
+            wrapped_original = proc.stdout.rstrip("\n")
         except Exception:
-            pass  # if their statusline fails, still show the ad
+            wrapped_original = None
 
-    # Production: emit one Bacon frame, advance the counter
-    print(render(next_tick(), SPONSOR))
+    # Print the wrapped original line first if we have one
+    if wrapped_original:
+        print(wrapped_original)
+
+    # --- Load config and cached ad ---
+    config = {}
+    ad = None
+    try:
+        config = load_config()
+        ttl = config.get("cache_ttl_sec", 600)
+        cached_ad = load_statusline_ad()
+        if cached_ad and is_fresh(cached_ad, ttl):
+            ad = cached_ad
+    except Exception:
+        pass
+
+    if ad is None:
+        # No fresh ad: spawn refresher for next time, output nothing for the
+        # bacon segment (never show stale/empty).
+        spawn_refresh()
+        return
+
+    # Build sponsor dict from the cached ad
+    sp = {
+        "logo": ad.get("logo", "🥓"),
+        "name": ad.get("advertiser", "Sponsor"),
+        "tagline": ad.get("tagline") or ad.get("ad_text", ""),
+        "url": ad.get("url", ""),
+    }
+
+    tick = next_tick()
+    segment = render(tick, sp)
+
+    # Wrap the sponsor segment's visible text in an OSC 8 hyperlink if url present
+    ad_url = ad.get("url", "")
+    if ad_url:
+        segment = osc8(ad_url, segment)
+
+    # Append balance (dimmed) if available
+    balance = load_balance()
+    if balance is not None:
+        try:
+            segment = f"{segment}  {DIM}Bacon ${balance:.4f}{RESET}"
+        except Exception:
+            pass
+
+    print(segment)
+
+    # View-threshold reporting (detached, after printing so render is never delayed)
+    maybe_report_view(ad, config)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        sys.exit(0)

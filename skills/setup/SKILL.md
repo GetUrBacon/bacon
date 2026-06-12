@@ -26,15 +26,19 @@ CLIs (use `${CLAUDE_PLUGIN_ROOT}/bin/...`, fall back to
    - Q1 Frequency: Minimal / Standard / More / Max / Every (show live $ estimates)
    - Q2 Personalization: Anonymous / Stack only / Full profile
         (state plainly: prompts, code, and keys are NEVER shared)
-   - Q3 Surface: Strip only / Cards  (do NOT offer statusline — see note below)
+   - Q3 Surface: Strip only / Cards / Statusline / Both  (statusline = the
+     clickable, animated sponsor line in your status bar)
    - Q4 Block categories (multi-select): crypto, food, ai, ... or Nothing
    Apply each answer:
    `bacon-config frequency <x>` · `bacon-config profile <x>` ·
    `bacon-config surface <x>` · `bacon-config block <x>` per blocked item.
 
-   NOTE: The animated statusline tier is built but NOT offered right now — enabling
-   it requires editing ~/.claude/settings.json, which skills are blocked from doing.
-   Don't present statusline/both. See claudedocs/decision_statusline_deferred.md.
+   STATUSLINE CONSENT: if the user picks Statusline or Both, the status-bar ad
+   requires a one-time edit to ~/.claude/settings.json. Ask for explicit consent,
+   then run the consented command `bacon-setup statusline-enable --style <marquee|
+   sweep|pulse>`. It is wrap-don't-clobber: any existing statusLine is preserved
+   and restored on `bacon-setup statusline-disable`/`uninstall`. Never edit
+   settings.json silently — always via this command, with consent.
 
 4. **Confirm**
    Run `bacon-config show`. Display the final settings + earnings estimate.
