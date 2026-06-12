@@ -18,7 +18,7 @@ import urllib.request
 
 CONFIG_DIR = Path.home() / ".bacon"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
 TIMEOUT_SEC = 0.8  # 800 ms
 
 

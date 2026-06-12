@@ -28,7 +28,7 @@ SL_AD_FILE = CONFIG_DIR / "statusline_ad.json"
 SL_VIEW_FILE = CONFIG_DIR / "sl_view.json"
 BALANCE_FILE = CONFIG_DIR / "balance.json"
 
-AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
 
 # How many consecutive renders of the same impression before reporting a view
 VIEW_THRESHOLD_FRAMES = 3
