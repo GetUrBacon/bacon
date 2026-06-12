@@ -14,7 +14,7 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".bacon"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-DEFAULT_API = "https://api.geturbacon.dev"
+DEFAULT_API = "https://bacon-backend-production.up.railway.app"
 
 
 def load_config():

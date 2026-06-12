@@ -34,7 +34,7 @@ SPINNER_AD_FILE = CONFIG_DIR / "spinner_ad.json"
 SPINNER_BACKUP_FILE = CONFIG_DIR / "spinner_backup.json"
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 
-AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
 SPINNER_TIMEOUT = 0.8  # 800 ms — generous; we're not on the hot path
 
 

@@ -21,7 +21,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 CACHE_FILE = CONFIG_DIR / "ad_cache.json"
 FREQUENCY_DEFAULT = 10  # show ad every N prompts
 COUNTER_FILE = CONFIG_DIR / "counter"
-AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
 SIGNAL_FILE = CONFIG_DIR / "signals.json"
 TIMEOUT_MS = 80  # must resolve within 80ms or skip
 
