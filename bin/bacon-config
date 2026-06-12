@@ -33,8 +33,12 @@ FREQ_MAP = {"minimal": 20, "standard": 10, "more": 5, "max": 2, "every": 1}
 PROFILE_TIERS = ["anonymous", "stack", "full"]
 SURFACES = ["strip", "cards", "statusline", "both"]
 
-# Earnings estimates per (frequency, profile) at 500 prompts/day — for show output
-PROFILE_CPM = {"anonymous": 1.0, "stack": 2.5, "full": 6.5}
+# Rough earnings estimate baseline at 500 prompts/day — for show output.
+# Deliberately tier-independent: payout derives from the advertiser's bid (server
+# side), not the user's profile tier. A higher tier means more *relevant* ads,
+# which *may* earn more via better-targeted (higher-bid) campaigns — but there is
+# no guaranteed fixed multiplier, so we don't promise one in the estimate.
+BASE_CPM = 1.0
 
 DEFAULTS = {
     "user_id": "",
@@ -73,10 +77,9 @@ def save(cfg):
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
 
 
-def est_monthly(freq_tier, profile_tier):
+def est_monthly(freq_tier):
     per_day = 500 / FREQ_MAP[freq_tier]
-    cpm = PROFILE_CPM[profile_tier]
-    return per_day * 30 / 1000 * cpm * 0.5  # developer 50% cut
+    return per_day * 30 / 1000 * BASE_CPM * 0.5  # developer 50% cut
 
 
 def cmd_show(cfg):
@@ -93,8 +96,8 @@ def cmd_show(cfg):
     print(f"  Blocked cats: {bc}")
     print(f"  Blocked advs: {ba}")
     print("─" * 42)
-    est = est_monthly(cfg["frequency_tier"], cfg["profile_tier"])
-    print(f"  Est. earnings: ~${est:.2f}/mo  (at 500 prompts/day)")
+    est = est_monthly(cfg["frequency_tier"])
+    print(f"  Est. earnings: ~${est:.2f}/mo  (rough, at 500 prompts/day)")
     print("─" * 42)
 
 
@@ -105,7 +108,7 @@ def cmd_frequency(cfg, val):
     cfg["frequency"] = FREQ_MAP[val]
     save(cfg)
     print(f"✅ Frequency → {val} (1 per {FREQ_MAP[val]} prompts). "
-          f"Est. ~${est_monthly(val, cfg['profile_tier']):.2f}/mo")
+          f"Est. ~${est_monthly(val):.2f}/mo")
 
 
 def cmd_profile(cfg, val):
@@ -114,11 +117,12 @@ def cmd_profile(cfg, val):
     cfg["profile_tier"] = val
     save(cfg)
     note = {
-        "anonymous": "no data shared — lowest CPM, random ads",
-        "stack": "languages/deps shared — relevant ads, ~2.5x CPM",
-        "full": "stack + domain shared — most relevant, ~6.5x CPM",
+        "anonymous": "no data shared — random ads",
+        "stack": "languages/deps shared — more relevant ads",
+        "full": "stack + domain shared — most relevant ads",
     }[val]
-    print(f"✅ Profile → {val} ({note}). Your prompts/code are never shared.")
+    print(f"✅ Profile → {val} ({note}). More relevant ads may earn more via "
+          f"better-targeted campaigns. Your prompts/code are never shared.")
 
 
 def cmd_surface(cfg, val):

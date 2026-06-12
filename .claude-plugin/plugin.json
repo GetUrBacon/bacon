@@ -1,7 +1,7 @@
 {
   "name": "bacon",
-  "description": "Get your bacon. Earn revenue from contextual ads while you code — your AI subscription pays for itself.",
-  "version": "0.1.6",
+  "description": "Get your bacon. Earn revenue from contextual ads while you code \u2014 your AI subscription pays for itself.",
+  "version": "0.1.7",
   "author": {
     "name": "Bacon",
     "url": "https://geturbacon.dev"
@@ -9,5 +9,11 @@
   "homepage": "https://geturbacon.dev",
   "repository": "https://github.com/geturbacon/bacon",
   "license": "MIT",
-  "keywords": ["bacon", "ads", "monetization", "revenue", "developer"]
+  "keywords": [
+    "bacon",
+    "ads",
+    "monetization",
+    "revenue",
+    "developer"
+  ]
 }
