@@ -10,6 +10,7 @@ All functions are fail-open: they return None / [] / False on any error and
 never raise. Uses only stdlib.
 """
 
+import base64
 import fcntl
 import json
 import os
@@ -46,10 +47,133 @@ def load_config() -> dict:
         return {}
 
 
+def _decode_jwt_payload(token: str) -> dict:
+    """
+    Decode the payload segment of a JWT (no signature verification).
+    The token was obtained over TLS from Clerk, so signature check is not needed here.
+    Returns {} on any error.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return {}
+        seg = parts[1]
+        # Pad to a multiple of 4 for base64 decoding
+        seg += "=" * (4 - len(seg) % 4)
+        return json.loads(base64.urlsafe_b64decode(seg))
+    except Exception:
+        return {}
+
+
+def _token_is_expired(token: str, skew_seconds: int = 10) -> bool:
+    """
+    Return True if the JWT's `exp` claim is in the past (with a small clock skew).
+    Returns False (not expired / unknown) on any error so we fail-open.
+    """
+    try:
+        payload = _decode_jwt_payload(token)
+        exp = payload.get("exp")
+        if exp is None:
+            return False  # no exp claim — treat as valid
+        return time.time() > (exp - skew_seconds)
+    except Exception:
+        return False
+
+
+def _try_refresh_token(refresh_token: str, config: dict) -> str | None:
+    """
+    Exchange a refresh_token for a new id_token via the Clerk token endpoint.
+    Returns the new id_token on success, None on any error.
+    Never raises.
+    """
+    try:
+        import urllib.request
+        import urllib.parse
+        import urllib.error
+
+        # Fetch OAuth config to get the token URL
+        config_url = "https://api.geturbacon.dev/v1/auth/config"
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(config_url, headers={"User-Agent": "bacon-core/1.0"}),
+                timeout=5,
+            ) as resp:
+                oauth = json.loads(resp.read())
+        except Exception:
+            return None
+
+        token_url = oauth.get("token_url", "")
+        client_id = oauth.get("client_id", "")
+        if not token_url or not client_id:
+            return None
+
+        body = urllib.parse.urlencode({
+            "grant_type":    "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id":     client_id,
+        }).encode()
+        req = urllib.request.Request(
+            token_url,
+            data=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "bacon-core/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                tokens = json.loads(resp.read())
+        except urllib.error.HTTPError:
+            return None
+
+        new_id_token = tokens.get("id_token", "")
+        if not new_id_token:
+            return None
+
+        # Persist the new token (and updated refresh_token if the server rotates it)
+        try:
+            cfg = load_config()
+            cfg["clerk_token"] = new_id_token
+            new_refresh = tokens.get("refresh_token")
+            if new_refresh:
+                cfg["clerk_refresh_token"] = new_refresh
+            _write_config_secure(cfg)
+        except Exception:
+            pass
+
+        return new_id_token
+    except Exception:
+        return None
+
+
+def _write_config_secure(cfg: dict) -> None:
+    """
+    Write cfg to CONFIG_FILE with 0o600 permissions.
+    Uses os.open with O_CREAT|O_WRONLY|O_TRUNC and mode 0o600
+    to ensure the file is created with restricted permissions.
+    Never raises.
+    """
+    try:
+        CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
+        data = json.dumps(cfg, indent=2)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(str(CONFIG_FILE), flags, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(data)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def get_clerk_token() -> str | None:
     """
-    Read the Clerk JWT token from config if present and valid.
-    Returns None if the token is not stored or is invalid (empty/malformed).
+    Read the Clerk JWT token from config if present and valid (not expired).
+    If the stored id_token is expired and a refresh_token is available,
+    attempt a silent refresh before returning.
+    Returns None if the token is not stored, invalid, or cannot be refreshed.
     Never raises; fail-open.
     """
     try:
@@ -57,10 +181,23 @@ def get_clerk_token() -> str | None:
         token = cfg.get("clerk_token", "").strip()
         if not token:
             return None
-        # Basic validation: token should have 3 parts separated by dots
+        # Basic structure validation: JWT must have 3 dot-separated parts
         if token.count(".") != 2:
             return None
-        return token
+
+        # Check expiry; if still valid, return immediately
+        if not _token_is_expired(token):
+            return token
+
+        # Token is expired — try refresh if we have a refresh_token
+        refresh_token = cfg.get("clerk_refresh_token", "").strip()
+        if refresh_token:
+            new_token = _try_refresh_token(refresh_token, cfg)
+            if new_token:
+                return new_token
+
+        # Expired and no refresh succeeded — treat as absent
+        return None
     except Exception:
         return None
 

@@ -37,6 +37,7 @@ import base64
 import hashlib
 import http.server
 import json
+import os
 import secrets
 import socket
 import sys
@@ -75,15 +76,46 @@ def _free_port():
     raise OSError("No free port found")
 
 
-def _run_local_server(port):
-    """Start a one-shot HTTP server, return the first ?code= value or None."""
+def _run_local_server(port, expected_state: str):
+    """
+    Start a one-shot HTTP server.
+    Returns the first ?code= value whose ?state= matches expected_state.
+    Returns None on timeout, cancellation, error= callback, or state mismatch
+    (login-CSRF / code-injection protection per RFC 6819 §4.4.1.8).
+    """
     received = []
     done = threading.Event()
 
     class _H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            qs = urllib.parse.urlparse(self.path).query
-            code = urllib.parse.parse_qs(qs).get("code", [""])[0]
+            qs_str = urllib.parse.urlparse(self.path).query
+            qs = urllib.parse.parse_qs(qs_str)
+            error = qs.get("error", [""])[0]
+            code  = qs.get("code",  [""])[0]
+            state = qs.get("state", [""])[0]
+
+            if error:
+                # OAuth provider returned an error — reject with informative page
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                msg = f"<html><body><h2>Bacon login error: {error}. Please close this tab and try again.</h2></body></html>"
+                self.wfile.write(msg.encode())
+                done.set()
+                return
+
+            # Verify the state parameter to prevent login-CSRF
+            if state != expected_state:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><h2>State mismatch. "
+                    b"Possible CSRF attack. Close this tab.</h2></body></html>"
+                )
+                done.set()
+                return
+
             if code:
                 received.append(code)
             self.send_response(200)
@@ -91,6 +123,7 @@ def _run_local_server(port):
             self.end_headers()
             self.wfile.write(b"<html><body><h2>Bacon connected! You can close this tab.</h2></body></html>")
             done.set()
+
         def log_message(self, *_):
             pass
 
@@ -139,6 +172,9 @@ def cmd_login():
             return None
 
         verifier, challenge = _pkce_pair()
+        # Generate a random state value to prevent login-CSRF (RFC 6819 §4.4.1.8)
+        oauth_state = secrets.token_urlsafe(32)
+
         # Fixed port required — Clerk OAuth apps need exact redirect_uri match
         for port in [7891, 7892, 7893]:
             try:
@@ -159,16 +195,18 @@ def cmd_login():
             "response_type":         "code",
             "code_challenge":        challenge,
             "code_challenge_method": "S256",
-            "scope":                 "openid profile email",
+            # offline_access requests a refresh_token for silent token renewal
+            "scope":                 "openid profile email offline_access",
+            "state":                 oauth_state,
         })
         full_url = f"{authorize_url}?{params}"
         print("🥓 Opening browser to connect your Bacon account...")
         print(f"   If it doesn't open, visit: {full_url}")
         webbrowser.open(full_url)
 
-        code = _run_local_server(port)
+        code = _run_local_server(port, expected_state=oauth_state)
         if not code:
-            print("⚠️  Login timed out or was cancelled. Using anonymous ID.")
+            print("⚠️  Login timed out, was cancelled, or state mismatch detected. Using anonymous ID.")
             return None
 
         body = urllib.parse.urlencode({
@@ -214,8 +252,11 @@ def cmd_login():
         # THIS token against Clerk's JWKS (app/auth.py); the OAuth access_token is
         # often opaque and would fail JWKS verification, so we deliberately send
         # the id_token, not the access_token.
+        # Also capture refresh_token (present when offline_access scope was granted)
+        # so bacon_core can silently renew the id_token when it expires.
+        refresh_token = tokens.get("refresh_token", "")
         if id_token:
-            return (clerk_id, id_token)
+            return (clerk_id, id_token, refresh_token)
 
         print(f"✅ Connected as {clerk_id}")
         return clerk_id
@@ -259,8 +300,31 @@ def cmd_status():
     print(f"  Spinner:    {'✅ enabled' if spinner_on else '❌ not enabled'}")
 
 
+def _write_config_secure(cfg: dict) -> None:
+    """
+    Write cfg to CONFIG_FILE with mode 0o600 (owner read/write only).
+    Creates BACON_DIR with 0o700 if needed.
+    Uses os.open with O_CREAT|O_WRONLY|O_TRUNC and explicit mode so the file
+    is created with the correct permissions regardless of umask.
+    Never raises.
+    """
+    try:
+        BACON_DIR.mkdir(mode=0o700, exist_ok=True)
+        data = json.dumps(cfg, indent=2)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(str(CONFIG_FILE), flags, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(data)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def cmd_init(user_id=None):
-    BACON_DIR.mkdir(exist_ok=True)
+    # H3: create ~/.bacon with 0o700 so only the owner can list/access it
+    BACON_DIR.mkdir(mode=0o700, exist_ok=True)
     cfg = load_json(CONFIG_FILE, {})
     resolved_id = user_id or cfg.get("user_id") or f"dev-{uuid.uuid4().hex[:12]}"
     cfg["user_id"] = resolved_id
@@ -274,7 +338,8 @@ def cmd_init(user_id=None):
     # Bootstrap leaves onboarding incomplete — the /bacon:setup skill runs the
     # preferences picker, then calls `bacon-setup onboarded` to flip this true.
     cfg.setdefault("onboarded", False)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    # H3: write config.json with 0o600 (owner read/write only) to protect tokens
+    _write_config_secure(cfg)
     print(f"✅ Config ready at {CONFIG_FILE} (user_id={cfg['user_id']})")
 
 
@@ -286,7 +351,7 @@ def cmd_onboarded():
         return
     cfg = load_json(CONFIG_FILE, {})
     cfg["onboarded"] = True
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    _write_config_secure(cfg)
     print("✅ Onboarding complete.")
 
 
@@ -350,7 +415,7 @@ def cmd_spinner_enable(style):  # noqa: ARG001 — style accepted for symmetry, 
         print("Bacon spinner already enabled.")
         return
     cfg["spinner_enabled"] = True
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    _write_config_secure(cfg)
     print("✅ Bacon spinner (thinking-verb ad) enabled.")
     print("   The sponsored thinking verb will appear from your next Claude Code session.")
     print("   To disable: bacon-setup spinner-disable")
@@ -361,7 +426,7 @@ def cmd_spinner_disable():
     cfg = load_json(CONFIG_FILE, {})
     if cfg:
         cfg["spinner_enabled"] = False
-        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        _write_config_secure(cfg)
 
     # Restore settings.json spinnerVerbs
     if CLAUDE_SETTINGS.exists():
@@ -391,7 +456,7 @@ def cmd_uninstall():
     cfg = load_json(CONFIG_FILE, {})
     if cfg:
         cfg["active"] = False
-        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        _write_config_secure(cfg)
     print("✅ Bacon deactivated. Your balance is preserved and will still pay out.")
 
 
@@ -422,12 +487,18 @@ def main():
         result = cmd_login()
         if result:
             if isinstance(result, tuple):
-                clerk_id, token = result
+                # Unpack: (clerk_id, id_token) or (clerk_id, id_token, refresh_token)
+                clerk_id = result[0]
+                token = result[1]
+                refresh_token = result[2] if len(result) > 2 else ""
                 cmd_init(user_id=clerk_id)
-                # Store the token in config for API calls
+                # Store the token(s) in config for API calls (0o600 via _write_config_secure)
                 cfg = load_json(CONFIG_FILE, {})
                 cfg["clerk_token"] = token
-                CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+                if refresh_token:
+                    cfg["clerk_refresh_token"] = refresh_token
+                _write_config_secure(cfg)
+                print(f"✅ Connected as {clerk_id}")
             else:
                 # Legacy: just user_id
                 cmd_init(user_id=result)
