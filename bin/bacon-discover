@@ -11,9 +11,14 @@ hook injection. Claude decides when it's relevant to suggest a tool.
 """
 
 import json
+import os
 import sys
 import urllib.request
 from pathlib import Path
+
+# Import bacon_core for auth header helper
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bacon_core as b
 
 CONFIG_DIR = Path.home() / ".bacon"
 # Default backend (live on Railway). Overridable via config auction_url so the
@@ -48,10 +53,15 @@ def fetch_suggestion(problem: str, category: str, user_id: str, url: str) -> dic
         "category": category,      # e.g. "auth", "database", "payments"
     }).encode()
 
+    headers = {"Content-Type": "application/json"}
+    auth_headers = b.get_auth_header()
+    if auth_headers:
+        headers.update(auth_headers)
+
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
