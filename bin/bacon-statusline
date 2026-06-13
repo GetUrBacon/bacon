@@ -121,7 +121,7 @@ def next_tick():
 # Frame renderers
 # ---------------------------------------------------------------------------
 
-MARQUEE_STEP = 1.5  # avg chars the marquee advances per frame (higher = faster)
+MARQUEE_STEP = 1.0  # avg chars the marquee advances per frame (higher = faster)
 
 
 def frame_marquee(tick, sp):
