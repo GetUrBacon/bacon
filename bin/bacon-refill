@@ -15,8 +15,8 @@ from pathlib import Path
 # Allow `import bacon_core` from the same directory as this script
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import urllib.request
 import urllib.error
+import urllib.request
 
 try:
     import bacon_core as b
@@ -75,6 +75,14 @@ try:
     campaigns = data.get("campaigns", [])
     b.CONFIG_DIR.mkdir(exist_ok=True)
     b.CAMPAIGNS_FILE.write_text(json.dumps({"ts": time.time(), "campaigns": campaigns}))
+except urllib.error.HTTPError as _e:
+    if _e.code == 401:
+        # Surface auth error to stderr so users see it (bacon-refill runs detached but
+        # stderr may appear in Claude Code's output; writing to stderr never crashes)
+        sys.stderr.write(
+            "\n[bacon] Session token expired or invalid during campaign sync. "
+            "Run `bacon-setup login` to reconnect your account.\n"
+        )
 except Exception:
     pass  # Leave existing cache in place; never block remaining steps
 
@@ -100,6 +108,12 @@ try:
             new_tokens = resp_data.get("tokens", [])
             if new_tokens:
                 b.append_tokens(new_tokens)
+except urllib.error.HTTPError as _e:
+    if _e.code == 401:
+        sys.stderr.write(
+            "\n[bacon] Session token expired or invalid during token refill. "
+            "Run `bacon-setup login` to reconnect your account.\n"
+        )
 except Exception:
     pass
 
@@ -160,6 +174,13 @@ try:
                                 fcntl.flock(f2, fcntl.LOCK_UN)
                     except Exception:
                         pass
+            except urllib.error.HTTPError as _e:
+                if _e.code == 401:
+                    sys.stderr.write(
+                        "\n[bacon] Session token expired or invalid during report flush. "
+                        "Run `bacon-setup login` to reconnect your account.\n"
+                    )
+                # Leave reports for the next run on any HTTP error
             except Exception:
                 pass  # Leave reports for the next run
 except Exception:
