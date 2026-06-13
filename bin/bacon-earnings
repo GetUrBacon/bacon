@@ -19,7 +19,7 @@ import bacon_core as b
 
 CONFIG_DIR = Path.home() / ".bacon"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-DEFAULT_API = "https://bacon-backend-production.up.railway.app"
+DEFAULT_API = "https://api.geturbacon.dev"
 
 
 def load_config():

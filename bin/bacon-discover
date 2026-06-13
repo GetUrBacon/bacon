@@ -21,10 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bacon_core as b
 
 CONFIG_DIR = Path.home() / ".bacon"
-# Default backend (live on Railway). Overridable via config auction_url so the
+# Default backend (canonical domain). Overridable via config auction_url so the
 # discover endpoint always tracks the same backend as the other surfaces.
-DISCOVER_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/discover"
-AUCTION_URL_DEFAULT = "https://bacon-backend-production.up.railway.app/v1/auction"
+DISCOVER_URL_DEFAULT = "https://api.geturbacon.dev/v1/discover"
+AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
 
 
 def load_config():
