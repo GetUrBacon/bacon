@@ -85,7 +85,7 @@ try:
         status, resp_data = _http_post(
             b.tokens_url(config),
             {"user_id": user_id, "n": needed, "profile_tier": profile_tier},
-            timeout=2.0,
+            timeout=10.0,  # minting a full bucket is a batch write; refill is detached, not hot-path
         )
         if 200 <= status < 300:
             new_tokens = resp_data.get("tokens", [])
