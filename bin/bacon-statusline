@@ -121,11 +121,14 @@ def next_tick():
 # Frame renderers
 # ---------------------------------------------------------------------------
 
+MARQUEE_STEP = 2  # chars the marquee advances per frame (higher = faster scroll)
+
+
 def frame_marquee(tick, sp):
     """Scroll the tagline through a fixed window."""
     text = f"{sp['logo']}  {sp['name']} — {sp['tagline']}    "
     n = len(text)
-    start = tick % n
+    start = (tick * MARQUEE_STEP) % n
     window = (text + text)[start:start + WINDOW]
     return f"{ORANGE}🥓 Sponsored{RESET} {DIM}│{RESET} {YEL}{window}{RESET}"
 

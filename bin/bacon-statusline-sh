@@ -14,7 +14,8 @@ BACON_DIR="$HOME/.bacon"
 FRAME="$BACON_DIR/sl_frame"
 TICK_FILE="$BACON_DIR/sl_sh_tick"
 STYLE="${BACON_STATUSLINE_STYLE:-marquee}"
-REGEN_EVERY=5   # recompute frame every N shell ticks (~15s at refreshInterval=3)
+REGEN_EVERY=1   # recompute the frame every tick (detached, non-blocking) so the
+                # marquee actually animates; the cat below still serves instantly
 
 # Find the Python script relative to this shell script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

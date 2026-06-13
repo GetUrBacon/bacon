@@ -307,7 +307,7 @@ def cmd_statusline_enable(style):
     settings["statusLine"] = {
         "type": "command",
         "command": bacon_command(style, wrap=wrap_cmd),
-        "refreshInterval": 3,
+        "refreshInterval": 1,
     }
     CLAUDE_SETTINGS.write_text(json.dumps(settings, indent=2))
     print(f"✅ Bacon statusline enabled (style={style}). "
