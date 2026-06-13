@@ -57,51 +57,69 @@ def load_json_file(path, default=None):
 # Step 1 — Buffer the report for last session's displayed verb
 # ---------------------------------------------------------------------------
 
-def report_last_impression(config):
-    """Buffer a report for the ad that was displayed last session."""
-    ad = load_json_file(SPINNER_AD_FILE)
-    if not ad:
-        return
-    impression_id = ad.get("impression_id")
-    impression_token = ad.get("impression_token")
-    campaign_id = ad.get("campaign_id")
-    if not impression_id or not impression_token or not campaign_id:
-        return
+SPINNER_VERB_COUNT = 4  # sponsored verbs Claude Code rotates through per session
 
-    bacon_core.buffer_report({
-        "user_id": config.get("user_id"),
-        "impression_id": impression_id,
-        "impression_token": impression_token,
-        "campaign_id": campaign_id,
-        "surface": "spinner",
-    })
+
+def report_last_impression(config):
+    """Buffer a report for each verb displayed last session.
+
+    spinner_ad.json may hold a single ad (legacy) or a list of ads (multi-verb).
+    """
+    data = load_json_file(SPINNER_AD_FILE)
+    if not data:
+        return
+    ads = data if isinstance(data, list) else [data]
+    for ad in ads:
+        impression_id = ad.get("impression_id")
+        impression_token = ad.get("impression_token")
+        campaign_id = ad.get("campaign_id")
+        if not impression_id or not impression_token or not campaign_id:
+            continue
+        bacon_core.buffer_report({
+            "user_id": config.get("user_id"),
+            "impression_id": impression_id,
+            "impression_token": impression_token,
+            "campaign_id": campaign_id,
+            "surface": "spinner",
+        })
 
 
 # ---------------------------------------------------------------------------
 # Step 2 — Select a fresh spinner ad locally and rotate into settings.json
 # ---------------------------------------------------------------------------
 
-def auction_spinner(config):
-    """Select a winner from the local campaign cache for surface=spinner.
-    Returns a combined ad dict (campaign fields + token fields), or None."""
+def auction_spinner(config, n=SPINNER_VERB_COUNT):
+    """Select up to *n* DISTINCT spinner winners from the local campaign cache.
+    Spinner has no prompt intent → select_winner rotates the untargeted pool.
+    Each distinct winner pops one token. Returns a list of combined ad dicts."""
     campaigns = bacon_core.load_campaigns()
-    # Spinner has no prompt intent — use untargeted / highest-priority selection
-    winner = bacon_core.select_winner(campaigns, set())
-    if not winner:
+    if not campaigns:
         bacon_core.spawn_refill()
-        return None
+        return []
 
-    tok = bacon_core.pop_token()
-    if not tok:
-        bacon_core.spawn_refill()
-        return None
-
-    return {
-        **winner,
-        "campaign_id":      winner["id"],
-        "impression_id":    tok["impression_id"],
-        "impression_token": tok["token"],
-    }
+    ads = []
+    seen = set()
+    # Cap attempts so a tiny pool (or random repeats) can't loop forever.
+    for _ in range(n * 4):
+        if len(ads) >= n:
+            break
+        winner = bacon_core.select_winner(campaigns, set())
+        if not winner:
+            break
+        if winner["id"] in seen:
+            continue  # don't waste a token re-picking the same advertiser
+        tok = bacon_core.pop_token()
+        if not tok:
+            bacon_core.spawn_refill()
+            break
+        seen.add(winner["id"])
+        ads.append({
+            **winner,
+            "campaign_id":      winner["id"],
+            "impression_id":    tok["impression_id"],
+            "impression_token": tok["token"],
+        })
+    return ads
 
 
 def build_verb(ad):
@@ -125,9 +143,10 @@ def is_our_verb(value):
     return "🥓" in json.dumps(value, ensure_ascii=False)
 
 
-def write_spinner_verb(verb):
+def write_spinner_verb(verbs):
     """
-    Write verb into ~/.claude/settings.json under spinnerVerbs.
+    Write the sponsored verbs into ~/.claude/settings.json under spinnerVerbs.
+    `verbs` is a list — Claude Code rotates through them while 'thinking'.
     Back up any pre-existing user value once to spinner_backup.json
     (only if it does not look like our own previous write).
     Preserves all other keys.
@@ -153,15 +172,17 @@ def write_spinner_verb(verb):
             except Exception:
                 pass
 
-    settings["spinnerVerbs"] = {"mode": "replace", "verbs": [verb]}
+    settings["spinnerVerbs"] = {"mode": "replace", "verbs": list(verbs)}
     CLAUDE_SETTINGS.write_text(json.dumps(settings, indent=2))
 
 
-def save_spinner_ad(ad):
-    """Persist the fresh ad to spinner_ad.json for next session's reporting."""
+def save_spinner_ad(ads):
+    """Persist the fresh ads (a list) to spinner_ad.json for next session's
+    reporting — one report per verb that was actually displayed."""
     try:
         CONFIG_DIR.mkdir(exist_ok=True)
-        entry = {
+        now = time.time()
+        entries = [{
             "ad_text":          ad.get("ad_text", ""),
             "advertiser":       ad.get("advertiser", ""),
             "tagline":          ad.get("tagline", ""),
@@ -169,9 +190,9 @@ def save_spinner_ad(ad):
             "campaign_id":      ad.get("campaign_id", ""),
             "impression_id":    ad.get("impression_id", ""),
             "impression_token": ad.get("impression_token", ""),
-            "ts":               time.time(),
-        }
-        SPINNER_AD_FILE.write_text(json.dumps(entry, indent=2))
+            "ts":               now,
+        } for ad in ads]
+        SPINNER_AD_FILE.write_text(json.dumps(entries, indent=2))
     except Exception:
         pass
 
@@ -199,15 +220,15 @@ def main():
     # Step 1 — Buffer last session's displayed verb report
     report_last_impression(config)
 
-    # Step 2 — Select fresh spinner ad and rotate settings.json
-    ad = auction_spinner(config)
-    if not ad:
+    # Step 2 — Select fresh spinner ads (multiple) and rotate settings.json
+    ads = auction_spinner(config)
+    if not ads:
         sys.exit(0)
 
     try:
-        verb = build_verb(ad)
-        write_spinner_verb(verb)
-        save_spinner_ad(ad)
+        verbs = [build_verb(a) for a in ads]
+        write_spinner_verb(verbs)
+        save_spinner_ad(ads)
     except Exception:
         pass
 

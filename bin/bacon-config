@@ -54,7 +54,7 @@ DEFAULTS = {
     "inreply_enabled": True,
     "blocked_categories": [],
     "blocked_advertisers": [],
-    "cache_ttl_sec": 600,
+    "cache_ttl_sec": 180,
     "spinner_enabled": False,
     "spinner_style": "default",
     "token_bucket_target": 50,

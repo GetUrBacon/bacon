@@ -276,7 +276,7 @@ def main():
     ad = None
     try:
         config = load_config()
-        ttl = config.get("cache_ttl_sec", 600)
+        ttl = config.get("cache_ttl_sec", 180)
         cached_ad = load_statusline_ad()
         if cached_ad and is_fresh(cached_ad, ttl):
             ad = cached_ad
