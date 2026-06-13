@@ -13,6 +13,7 @@ never raise. Uses only stdlib.
 import fcntl
 import json
 import os
+import random
 import subprocess
 import sys
 import time
@@ -119,7 +120,11 @@ def select_winner(campaigns: list, intent_labels, config: dict | None = None) ->
                     ``category`` appears in ``blocked_categories`` are
                     excluded before the auction runs.
 
-    Priority 1 = highest bidder (smallest number wins).
+    Selection is a WEIGHTED-RANDOM rotation (weight ∝ 1/priority, so priority 1 =
+    highest bidder wins most often) rather than always the single top bid. This
+    keeps the auction bid-respecting while rotating every eligible campaign in —
+    so the no-intent surfaces (spinner/statusline) don't show the same advertiser
+    forever, and tied-intent campaigns share the inventory.
     """
     try:
         if not campaigns:
@@ -148,7 +153,14 @@ def select_winner(campaigns: list, intent_labels, config: dict | None = None) ->
             pool = [c for c in campaigns if not c.get("target_signals")]
         if not pool:
             pool = campaigns
-        return min(pool, key=lambda c: c.get("priority", 1_000_000))
+
+        # Weighted-random rotation: weight ∝ 1/priority. Higher bidders win more
+        # often, but lower bidders still rotate in (no single advertiser owns a
+        # surface). A pool of one returns that one deterministically.
+        weights = [1.0 / max(1, c.get("priority", 1_000_000)) for c in pool]
+        if sum(weights) <= 0:
+            return min(pool, key=lambda c: c.get("priority", 1_000_000))
+        return random.choices(pool, weights=weights, k=1)[0]
     except Exception:
         return None
 
