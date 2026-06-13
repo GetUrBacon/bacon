@@ -29,6 +29,7 @@ TOKENS_FILE  = CONFIG_DIR / "tokens.json"        # list of {"impression_id","tok
 REPORTS_FILE = CONFIG_DIR / "reports.jsonl"      # one JSON object per line
 
 AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +39,46 @@ AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
 def load_config() -> dict:
     """Read ~/.bacon/config.json; return {} on any error."""
     try:
-        cfg_file = CONFIG_DIR / "config.json"
-        if not cfg_file.exists():
+        if not CONFIG_FILE.exists():
             return {}
-        return json.loads(cfg_file.read_text())
+        return json.loads(CONFIG_FILE.read_text())
     except Exception:
         return {}
+
+
+def get_clerk_token() -> str | None:
+    """
+    Read the Clerk JWT token from config if present and valid.
+    Returns None if the token is not stored or is invalid (empty/malformed).
+    Never raises; fail-open.
+    """
+    try:
+        cfg = load_config()
+        token = cfg.get("clerk_token", "").strip()
+        if not token:
+            return None
+        # Basic validation: token should have 3 parts separated by dots
+        if token.count(".") != 2:
+            return None
+        return token
+    except Exception:
+        return None
+
+
+def get_auth_header() -> dict:
+    """
+    Return a dict to add to HTTP headers for the Authorization header.
+    If a valid Clerk token exists, return {"Authorization": "Bearer <token>"}.
+    Otherwise return an empty dict (dual-mode: token-less installs still work).
+    Never raises; never logs token values.
+    """
+    try:
+        token = get_clerk_token()
+        if token:
+            return {"Authorization": f"Bearer {token}"}
+    except Exception:
+        pass
+    return {}
 
 
 # ---------------------------------------------------------------------------

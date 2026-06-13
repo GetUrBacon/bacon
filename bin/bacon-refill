@@ -26,22 +26,28 @@ except Exception:
 import fcntl
 
 
-def _http_get(url, timeout=2.0):
+def _http_get(url, timeout=2.0, extra_headers=None):
+    headers = {"Content-Type": "application/json", "X-Bacon-Version": "0.1.0"}
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(
         url,
-        headers={"Content-Type": "application/json", "X-Bacon-Version": "0.1.0"},
+        headers=headers,
         method="GET",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
 
 
-def _http_post(url, payload, timeout=2.0):
+def _http_post(url, payload, timeout=2.0, extra_headers=None):
     body = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json", "X-Bacon-Version": "0.1.0"}
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json", "X-Bacon-Version": "0.1.0"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -64,7 +70,8 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 try:
-    data = _http_get(b.campaigns_sync_url(config), timeout=2.0)
+    auth_headers = b.get_auth_header()
+    data = _http_get(b.campaigns_sync_url(config), timeout=2.0, extra_headers=auth_headers)
     campaigns = data.get("campaigns", [])
     b.CONFIG_DIR.mkdir(exist_ok=True)
     b.CAMPAIGNS_FILE.write_text(json.dumps({"ts": time.time(), "campaigns": campaigns}))
@@ -82,10 +89,12 @@ try:
     if needed > 0:
         user_id = config.get("user_id")
         profile_tier = config.get("profile_tier", "anonymous")
+        auth_headers = b.get_auth_header()
         status, resp_data = _http_post(
             b.tokens_url(config),
             {"user_id": user_id, "n": needed, "profile_tier": profile_tier},
             timeout=10.0,  # minting a full bucket is a batch write; refill is detached, not hot-path
+            extra_headers=auth_headers,
         )
         if 200 <= status < 300:
             new_tokens = resp_data.get("tokens", [])
@@ -127,10 +136,12 @@ try:
 
         if records:
             try:
+                auth_headers = b.get_auth_header()
                 status, _ = _http_post(
                     b.batch_url(config),
                     {"reports": records},
                     timeout=3.0,
+                    extra_headers=auth_headers,
                 )
                 if 200 <= status < 300:
                     # Rewrite file keeping only lines added after our snapshot

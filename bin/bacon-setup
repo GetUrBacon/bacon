@@ -210,6 +210,13 @@ def cmd_login():
             print(f"⚠️  Unexpected sub: {clerk_id!r}. Using anonymous ID.")
             return None
 
+        # Store the id_token (the signed JWT) for API calls. The backend verifies
+        # THIS token against Clerk's JWKS (app/auth.py); the OAuth access_token is
+        # often opaque and would fail JWKS verification, so we deliberately send
+        # the id_token, not the access_token.
+        if id_token:
+            return (clerk_id, id_token)
+
         print(f"✅ Connected as {clerk_id}")
         return clerk_id
 
@@ -412,9 +419,18 @@ def main():
     elif cmd == "uninstall":
         cmd_uninstall()
     elif cmd == "login":
-        clerk_id = cmd_login()
-        if clerk_id:
-            cmd_init(user_id=clerk_id)
+        result = cmd_login()
+        if result:
+            if isinstance(result, tuple):
+                clerk_id, token = result
+                cmd_init(user_id=clerk_id)
+                # Store the token in config for API calls
+                cfg = load_json(CONFIG_FILE, {})
+                cfg["clerk_token"] = token
+                CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+            else:
+                # Legacy: just user_id
+                cmd_init(user_id=result)
     else:
         print(__doc__)
 
