@@ -125,6 +125,12 @@ def read_prompt_from_stdin():
 # Tier renderers — the three ad formats
 # ---------------------------------------------------------------------------
 
+def _link_target(ad, surface):
+    """The UTM-tagged advertiser URL used as a markdown-link target. UTMs live
+    here (the target) only — never in the visible host text."""
+    return bacon_core.append_utm_params(ad.get("url", ""), surface, ad.get("id", ""))
+
+
 def render_strip(ad):
     """Tier 1 — single labeled line. Cheapest, least intrusive."""
     return f"🥓 Sponsored: {ad['ad_text']}"
@@ -136,14 +142,19 @@ def render_card(ad):
     logo = ad.get("logo", "🥓")
     name = ad.get("advertiser", "")
     tagline = ad.get("tagline", "") or ad["ad_text"]
-    url = ad.get("url", "").replace("https://", "").replace("http://", "")
+    raw = ad.get("url", "")
+    host = raw.replace("https://", "").replace("http://", "")
     lines = [
         "🥓 Sponsored",
         f"{logo} {name}",
         f"   {tagline}",
     ]
-    if url:
-        lines.append(f"   → {url}")
+    if raw:
+        # Markdown link: visible text = clean host, target = UTM'd url. CC's
+        # renderer turns [host](https) into a clickable OSC 8 link. Best-effort
+        # for card/marquee — if the model code-fences this block the link won't
+        # render (revert to plain `→ host` if live testing shows fencing).
+        lines.append(f"   → [{host}]({_link_target(ad, 'card')})")
     return "\n".join(f"│ {l}" for l in lines)
 
 
@@ -154,14 +165,16 @@ def render_banner(ad):
     logo = ad.get("logo", "🥓")
     name = ad.get("advertiser", "")
     tagline = ad.get("tagline", "") or ad["ad_text"]
-    url = ad.get("url", "").replace("https://", "").replace("http://", "")
+    raw = ad.get("url", "")
+    host = raw.replace("https://", "").replace("http://", "")
     out = [
         "┏━━ 🥓 Sponsored ━━━━━━━━━━━━━━━━",
         f"┃  {logo}  {name.upper()}",
         f"┃  {tagline}",
     ]
-    if url:
-        out.append(f"┃  → {url}")
+    if raw:
+        # Best-effort markdown link (see render_card note on fencing).
+        out.append(f"┃  → [{host}]({_link_target(ad, 'marquee')})")
     out.append("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(out)
 
@@ -176,10 +189,13 @@ def render_inline(ad):
     logo = ad.get("logo", "🥓")
     name = ad.get("advertiser", "")
     tagline = ad.get("tagline", "") or ad["ad_text"]
-    url = ad.get("url", "").replace("https://", "").replace("http://", "")
+    raw = ad.get("url", "")
+    host = raw.replace("https://", "").replace("http://", "")
     line = f"> 🥓 Sponsored · {logo} {name} — {tagline}"
-    if url:
-        line += f" → {url}"
+    if raw:
+        # Single blockquote line — low fence risk, reliably clickable. Visible
+        # text = clean host, target = UTM'd url.
+        line += f" → [{host}]({_link_target(ad, 'inline_mention')})"
     return line
 
 

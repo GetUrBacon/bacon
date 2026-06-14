@@ -109,6 +109,26 @@ def test_build_verb_fallback_adtext():
     print("  ✓ test_build_verb_fallback_adtext: PASS")
 
 
+def test_build_verb_no_link_default():
+    """Default (experimental_link off) → plain verb, no OSC 8 escape."""
+    ad = {"advertiser": "ZapLogin", "tagline": "auth fast", "url": "https://zap.dev", "id": "c1"}
+    result = build_verb(ad)
+    assert "\033]8" not in result, f"default must not emit OSC 8: {result!r}"
+    assert result == "🥓 ZapLogin — auth fast ↗", f"unexpected plain verb: {result!r}"
+    print("  ✓ test_build_verb_no_link_default: PASS")
+
+
+def test_build_verb_experimental_link():
+    """experimental_link on + url → OSC 8 wrapped, UTM target, marker preserved."""
+    ad = {"advertiser": "ZapLogin", "tagline": "auth fast", "url": "https://zap.dev", "id": "c1"}
+    result = build_verb(ad, experimental_link=True)
+    assert "\033]8;;" in result, f"expected OSC 8 escape: {result!r}"
+    assert "utm_content=spinner" in result and "utm_source=bacon" in result, result
+    # is_our_verb must still detect it (🥓 marker is inside the wrapped text)
+    assert is_our_verb({"mode": "replace", "verbs": [result]}) is True, "marker lost under wrap"
+    print("  ✓ test_build_verb_experimental_link: PASS")
+
+
 # =========================================================================
 # Main
 # =========================================================================
@@ -124,6 +144,8 @@ def main():
         test_is_our_verb_none,
         test_build_verb_has_marker,
         test_build_verb_fallback_adtext,
+        test_build_verb_no_link_default,
+        test_build_verb_experimental_link,
     ]
 
     passed = 0
