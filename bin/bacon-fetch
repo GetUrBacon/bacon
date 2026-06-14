@@ -199,14 +199,16 @@ def main():
         bacon_core.spawn_refill()
         sys.exit(0)
 
-    # Pick renderer by tier. `rendered_surface` is the surface we actually print,
-    # reported to settle so the backend prices this impression at that surface's
-    # rate (not a generic "context" bucket). Unknown tiers fall back to strip.
-    tier = winner.get("tier", "strip")
-    if tier == "card":
+    # Pick renderer by surface. `rendered_surface` is the surface we actually
+    # print, reported to settle so the backend prices this impression at that
+    # surface's rate (not a generic "context" bucket). The auction sends both
+    # `surface` (canonical) and `tier` (legacy); prefer surface, fall back to
+    # tier for older backends. Unknown surfaces fall back to strip.
+    surface = winner.get("surface") or winner.get("tier", "strip")
+    if surface == "card":
         ad_block = render_card(winner)
         rendered_surface = "card"
-    elif tier == "marquee":
+    elif surface == "marquee":
         ad_block = render_banner(winner)
         rendered_surface = "marquee"
     else:
