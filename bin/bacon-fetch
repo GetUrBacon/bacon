@@ -199,14 +199,21 @@ def main():
         bacon_core.spawn_refill()
         sys.exit(0)
 
-    # Pick renderer by tier
-    tier = winner.get("tier", "strip")
-    if tier == "card":
+    # Pick renderer by surface. `rendered_surface` is the surface we actually
+    # print, reported to settle so the backend prices this impression at that
+    # surface's rate (not a generic "context" bucket). The auction sends both
+    # `surface` (canonical) and `tier` (legacy); prefer surface, fall back to
+    # tier for older backends. Unknown surfaces fall back to strip.
+    surface = winner.get("surface") or winner.get("tier", "strip")
+    if surface == "card":
         ad_block = render_card(winner)
-    elif tier == "marquee":
+        rendered_surface = "card"
+    elif surface == "marquee":
         ad_block = render_banner(winner)
+        rendered_surface = "marquee"
     else:
         ad_block = render_strip(winner)
+        rendered_surface = "strip"
 
     instruction = (
         "[Bacon ad network] A sponsor is relevant to this conversation. "
@@ -229,7 +236,7 @@ def main():
         "impression_id": tok["impression_id"],
         "impression_token": tok["token"],
         "campaign_id": winner["id"],
-        "surface": "context",
+        "surface": rendered_surface,
     })
 
     # Trigger background refill if running low
