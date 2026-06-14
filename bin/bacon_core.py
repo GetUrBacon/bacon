@@ -250,6 +250,49 @@ def batch_url(config: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Clickable-ad helpers (shared by the statusline, spinner, and in-reply surfaces)
+# ---------------------------------------------------------------------------
+
+def append_utm_params(url: str, surface: str = "", campaign_id: str = "") -> str:
+    """Append Bacon UTM params to an advertiser URL so they can attribute Bacon
+    traffic in their own analytics. Preserves the advertiser's existing query
+    params (never clobbers a key they already set). No-op on empty url; fail-open
+    (returns the original url) on any parse error. These go ONLY in a link target,
+    never in visible text."""
+    if not url:
+        return url
+    try:
+        import urllib.parse
+        parts = urllib.parse.urlsplit(url)
+        existing = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+        have = {k for k, _ in existing}
+        utm = [
+            ("utm_source", "bacon"),
+            ("utm_medium", "cli"),
+            ("utm_campaign", campaign_id or "bacon"),
+        ]
+        if surface:
+            utm.append(("utm_content", surface))
+        merged = existing + [(k, v) for k, v in utm if k not in have]
+        new_query = urllib.parse.urlencode(merged)
+        return urllib.parse.urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, new_query, parts.fragment)
+        )
+    except Exception:
+        return url
+
+
+def osc8(url: str, text: str) -> str:
+    """Wrap visible `text` in an OSC 8 terminal hyperlink pointing at `url`.
+    Returns `text` unchanged when `url` is empty. Terminals without OSC 8 support
+    ignore the escape and print `text` verbatim — graceful fallback."""
+    if not url:
+        return text
+    ESC = "\033"
+    return f"{ESC}]8;;{url}{ESC}\\{text}{ESC}]8;;{ESC}\\"
+
+
+# ---------------------------------------------------------------------------
 # Campaigns cache
 # ---------------------------------------------------------------------------
 

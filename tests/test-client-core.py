@@ -135,6 +135,58 @@ def test_base_url_default():
         tests_failed += 1
 
 
+def test_append_utm_params():
+    """append_utm_params: adds Bacon UTMs to the target, preserves existing query,
+    never clobbers advertiser keys, preserves path/fragment, no-op on empty."""
+    global tests_passed, tests_failed
+    test_names.append("test_append_utm_params")
+    try:
+        # no-op on empty
+        assert b.append_utm_params("", "card", "c1") == "", "empty url must be a no-op"
+        # all four utm_* present
+        out = b.append_utm_params("https://acme.com", "inline_mention", "camp_x")
+        for frag in ("utm_source=bacon", "utm_medium=cli", "utm_campaign=camp_x", "utm_content=inline_mention"):
+            assert frag in out, f"missing {frag} in {out}"
+        # preserves the advertiser's existing query param
+        out2 = b.append_utm_params("https://acme.com/p?ref=abc", "card", "c1")
+        assert "ref=abc" in out2 and "utm_source=bacon" in out2, out2
+        # does NOT clobber an advertiser-set utm_source
+        out3 = b.append_utm_params("https://acme.com?utm_source=their_own", "card", "c1")
+        assert "utm_source=their_own" in out3, out3
+        assert out3.count("utm_source=") == 1, f"duplicate utm_source in {out3}"
+        # preserves path + fragment
+        out4 = b.append_utm_params("https://acme.com/a/b#sec", "card", "c1")
+        assert "/a/b" in out4 and out4.endswith("#sec"), out4
+        # fail-open: garbage in → string out, no raise
+        assert isinstance(b.append_utm_params("not a url", "card", "c1"), str)
+        print("✓ test_append_utm_params PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_append_utm_params FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_append_utm_params ERROR: {e}")
+        tests_failed += 1
+
+
+def test_osc8():
+    """osc8: empty url passes text through; non-empty wraps with the OSC 8 escape."""
+    global tests_passed, tests_failed
+    test_names.append("test_osc8")
+    try:
+        assert b.osc8("", "TEXT") == "TEXT", "empty url must pass text through"
+        wrapped = b.osc8("https://acme.com", "TEXT")
+        assert "\033]8;;" in wrapped and "https://acme.com" in wrapped and "TEXT" in wrapped, wrapped
+        print("✓ test_osc8 PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_osc8 FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_osc8 ERROR: {e}")
+        tests_failed += 1
+
+
 def test_base_url_custom():
     """Test base_url with custom auction_url."""
     global tests_passed, tests_failed
@@ -368,6 +420,8 @@ def main():
     test_select_empty()
     test_base_url_default()
     test_base_url_custom()
+    test_append_utm_params()
+    test_osc8()
     test_token_bucket_roundtrip()
     test_append_accumulates()
     test_tokens_low()

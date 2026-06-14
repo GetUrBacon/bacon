@@ -122,12 +122,23 @@ def auction_spinner(config, n=SPINNER_VERB_COUNT):
     return ads
 
 
-def build_verb(ad):
-    """Build the single spinner verb string shown as CC's 'thinking' text."""
+def build_verb(ad, experimental_link=False):
+    """Build the single spinner verb string shown as CC's 'thinking' text.
+
+    `experimental_link` (config: experimental_spinner_link, default off): wrap the
+    verb in an OSC 8 hyperlink. CC's spinner UI consumes plain text and likely
+    sanitizes escapes, so this is UNCONFIRMED — gated off by default, and the 🥓
+    marker stays inside the wrapped text so is_our_verb() / disable still work."""
     advertiser = ad.get("advertiser", "")
     tagline = ad.get("tagline") or ad.get("ad_text", "")
     # Keep it short and distinctive with the bacon emoji prefix
-    return f"🥓 {advertiser} — {tagline} ↗"
+    verb = f"🥓 {advertiser} — {tagline} ↗"
+    if experimental_link and ad.get("url"):
+        target = bacon_core.append_utm_params(
+            ad["url"], "spinner", ad.get("campaign_id") or ad.get("id", "")
+        )
+        return bacon_core.osc8(target, verb)
+    return verb
 
 
 def is_our_verb(value):
@@ -226,7 +237,8 @@ def main():
         sys.exit(0)
 
     try:
-        verbs = [build_verb(a) for a in ads]
+        experimental_link = config.get("experimental_spinner_link", False)
+        verbs = [build_verb(a, experimental_link) for a in ads]
         write_spinner_verb(verbs)
         save_spinner_ad(ads)
     except Exception:

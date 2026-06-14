@@ -40,13 +40,9 @@ VIEW_THRESHOLD_FRAMES = 3
 DIM = "\033[2m"; BOLD = "\033[1m"; RESET = "\033[0m"
 YEL = "\033[93m"; CYAN = "\033[96m"; GRN = "\033[92m"; ORANGE = "\033[38;5;208m"
 
-# OSC 8 hyperlink sequences
-def osc8(url, text):
-    """Wrap text in an OSC 8 hyperlink (terminal-clickable link)."""
-    if not url:
-        return text
-    ESC = "\033"
-    return f"{ESC}]8;;{url}{ESC}\\{text}{ESC}]8;;{ESC}\\"
+# OSC 8 hyperlink — shared impl in bacon_core (kept as a module-level name so the
+# existing statusline tests and references resolve unchanged).
+osc8 = bacon_core.osc8
 
 # Demo fixture — only used when --demo is passed
 DEMO_SPONSOR = {
@@ -303,10 +299,12 @@ def main():
     tick = next_tick()
     segment = render(tick, sp)
 
-    # Wrap the sponsor segment's visible text in an OSC 8 hyperlink if url present
+    # Wrap the sponsor segment's visible text in an OSC 8 hyperlink if url present.
+    # UTMs go on the link TARGET only — the visible segment text stays clean.
     ad_url = ad.get("url", "")
     if ad_url:
-        segment = osc8(ad_url, segment)
+        target = bacon_core.append_utm_params(ad_url, "statusline", ad.get("campaign_id", ""))
+        segment = osc8(target, segment)
 
     # Append balance (dimmed) if available
     balance = load_balance()
