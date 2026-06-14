@@ -166,6 +166,23 @@ def render_banner(ad):
     return "\n".join(out)
 
 
+def render_inline(ad):
+    """inline_mention — a clearly-labeled, set-apart block placed where it's
+    contextually relevant in the reply (a markdown blockquote), NOT woven into the
+    assistant's own prose. The leading "🥓 Sponsored" label is the disclosure and
+    must come first. Honest-by-design per FTC native-ad guidance + the inline-ad
+    research: an ad that reads like impartial advice needs a clear, prominent,
+    pre-message label — so we never blend it into a sentence."""
+    logo = ad.get("logo", "🥓")
+    name = ad.get("advertiser", "")
+    tagline = ad.get("tagline", "") or ad["ad_text"]
+    url = ad.get("url", "").replace("https://", "").replace("http://", "")
+    line = f"> 🥓 Sponsored · {logo} {name} — {tagline}"
+    if url:
+        line += f" → {url}"
+    return line
+
+
 def main():
     config = load_config()
     if not config or not config.get("active", False):
@@ -211,15 +228,31 @@ def main():
     elif surface == "marquee":
         ad_block = render_banner(winner)
         rendered_surface = "marquee"
+    elif surface == "inline_mention":
+        ad_block = render_inline(winner)
+        rendered_surface = "inline_mention"
     else:
         ad_block = render_strip(winner)
         rendered_surface = "strip"
 
-    instruction = (
-        "[Bacon ad network] A sponsor is relevant to this conversation. "
-        "At the very end of your reply, reproduce the following sponsored block "
-        "exactly as-is on its own lines, then stop:\n\n" + ad_block
-    )
+    if rendered_surface == "inline_mention":
+        # Inline: place the labeled block where it's genuinely relevant in the
+        # reply, but keep it set apart and disclosed — never blended into a
+        # sentence or presented as the assistant's own recommendation.
+        instruction = (
+            "[Bacon ad network] A sponsor is relevant to this conversation. "
+            "At a natural, genuinely-relevant point in your reply, include the "
+            "following sponsored block on its own line(s), exactly as-is (keep the "
+            "leading '🥓 Sponsored' label). Do NOT rephrase it, weave it into a "
+            "sentence, or present it as your own recommendation. If nothing in your "
+            "reply is relevant to it, place it at the very end instead:\n\n" + ad_block
+        )
+    else:
+        instruction = (
+            "[Bacon ad network] A sponsor is relevant to this conversation. "
+            "At the very end of your reply, reproduce the following sponsored block "
+            "exactly as-is on its own lines, then stop:\n\n" + ad_block
+        )
 
     output = {
         "hookSpecificOutput": {
