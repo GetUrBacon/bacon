@@ -126,9 +126,17 @@ def read_prompt_from_stdin():
 # ---------------------------------------------------------------------------
 
 def _link_target(ad, surface):
-    """The UTM-tagged advertiser URL used as a markdown-link target. UTMs live
-    here (the target) only — never in the visible host text."""
-    return bacon_core.append_utm_params(ad.get("url", ""), surface, ad.get("id", ""))
+    """Short click-through redirect used as the markdown-link target:
+    `{api_base}/c/{campaign_id}?s={surface}`. The backend 302s to the advertiser
+    URL with UTMs appended, so the TARGET stays short — a terminal without OSC 8
+    (e.g. Apple Terminal) shows a clean `host (short-url)` fallback instead of a
+    giant UTM string, while OSC 8 terminals render a clean clickable host and the
+    click is tracked server-side. Falls back to the direct UTM'd advertiser URL
+    when there is no campaign id."""
+    cid = ad.get("campaign_id") or ad.get("id", "")
+    if not cid:
+        return bacon_core.append_utm_params(ad.get("url", ""), surface, "")
+    return f"{bacon_core.redirect_base()}/c/{cid}?s={surface}"
 
 
 def render_strip(ad):
