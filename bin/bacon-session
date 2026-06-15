@@ -131,8 +131,13 @@ def build_verb(ad, experimental_link=False):
     marker stays inside the wrapped text so is_our_verb() / disable still work."""
     advertiser = ad.get("advertiser", "")
     tagline = ad.get("tagline") or ad.get("ad_text", "")
-    # Keep it short and distinctive with the bacon emoji prefix
-    verb = f"🥓 {advertiser} — {tagline} ↗"
+    logo = ad.get("logo", "")
+    # Keep it short and distinctive. 🥓 is the disclosure marker (is_our_verb
+    # relies on it); {logo} is the brand icon → icon–name–message, matching the
+    # strip/statusline surfaces. 🥓 stands in for the longer "Sponsored │" prefix
+    # because CC's thinking-verb line is space-constrained.
+    brand = f"{logo} {advertiser}".strip() if logo else advertiser
+    verb = f"🥓 {brand} — {tagline} ↗"
     if experimental_link and ad.get("url"):
         target = bacon_core.append_utm_params(
             ad["url"], "spinner", ad.get("campaign_id") or ad.get("id", "")
