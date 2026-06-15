@@ -237,6 +237,13 @@ def base_url(config: dict) -> str:
     return AUCTION_URL_DEFAULT.rstrip("/")[: -len("/v1/auction")]
 
 
+def redirect_base() -> str:
+    """API origin (no trailing slash) for the /c/{id} click redirect. Renderers
+    have no config in scope, so this resolves to the prod default base — clicks
+    always settle against prod."""
+    return base_url({})
+
+
 def campaigns_sync_url(config: dict) -> str:
     return base_url(config) + "/v1/campaigns/sync"
 
