@@ -132,8 +132,17 @@ def _link_target(ad, surface):
 
 
 def render_strip(ad):
-    """Tier 1 — single labeled line. Cheapest, least intrusive."""
-    return f"🥓 Sponsored: {ad['ad_text']}"
+    """Tier 1 — single labeled line. Cheapest, least intrusive.
+
+    Format: `🥓 Sponsored {logo} {name} — {message}`, mirroring the statusline and
+    inline_mention surfaces so every format shows logo + advertiser + message (not
+    a bare line). The leading "🥓 Sponsored" stays the first-thing disclosure."""
+    logo = ad.get("logo", "🥓")
+    name = ad.get("advertiser", "")
+    msg = ad.get("ad_text", "")
+    if name:
+        return f"🥓 Sponsored │ {logo} {name} — {msg}"
+    return f"🥓 Sponsored │ {logo} {msg}"
 
 
 def render_card(ad):
