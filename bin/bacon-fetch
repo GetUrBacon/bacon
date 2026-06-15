@@ -132,8 +132,23 @@ def _link_target(ad, surface):
 
 
 def render_strip(ad):
-    """Tier 1 — single labeled line. Cheapest, least intrusive."""
-    return f"🥓 Sponsored: {ad['ad_text']}"
+    """Tier 1 — single labeled line. Cheapest, least intrusive.
+
+    Format: `🥓 Sponsored │ {logo} {name} — {message} → [host](url)`, mirroring the
+    statusline and inline_mention surfaces so every format shows logo + advertiser
+    + message and is clickable. The leading "🥓 Sponsored" stays the first-thing
+    disclosure; the visible host text is clean, UTMs live on the link target only."""
+    logo = ad.get("logo", "🥓")
+    name = ad.get("advertiser", "")
+    msg = ad.get("ad_text", "")
+    raw = ad.get("url", "")
+    host = raw.replace("https://", "").replace("http://", "")
+    head = f"🥓 Sponsored │ {logo} {name} — {msg}" if name else f"🥓 Sponsored │ {logo} {msg}"
+    if raw:
+        # Markdown link → CC renders [host](https) as a clickable OSC 8 link (same
+        # as card/inline). UTMs go on the target only, never the visible host.
+        head += f" → [{host}]({_link_target(ad, 'strip')})"
+    return head
 
 
 def render_card(ad):
