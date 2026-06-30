@@ -32,6 +32,13 @@ REPORTS_FILE = CONFIG_DIR / "reports.jsonl"      # one JSON object per line
 AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
+# Public OAuth config (client_id / authorize_url / token_url). These values are
+# static, so cache them on disk and fetch at most once per TTL — fetching on
+# every token refresh caused a request storm against /v1/auth/config.
+AUTH_CONFIG_FILE = CONFIG_DIR / "auth_config.json"  # {..., "_ts": float}
+AUTH_CONFIG_URL  = "https://api.geturbacon.dev/v1/auth/config"
+AUTH_CONFIG_TTL  = 86400  # 24h
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -80,6 +87,51 @@ def _token_is_expired(token: str, skew_seconds: int = 10) -> bool:
         return False
 
 
+def _get_auth_config() -> dict:
+    """
+    Return the public OAuth config dict (client_id, authorize_url, token_url).
+
+    These are static values, so they're cached on disk in ~/.bacon/auth_config.json
+    with a long TTL and the endpoint is hit at most once per TTL. Fetching it on
+    every token refresh (as this used to) produced a 40-90 req/s storm against
+    /v1/auth/config. Fail-open: returns {} on any error.
+    """
+    # Serve from cache while fresh
+    try:
+        if AUTH_CONFIG_FILE.exists():
+            cached = json.loads(AUTH_CONFIG_FILE.read_text())
+            if isinstance(cached, dict) and \
+                    (time.time() - float(cached.get("_ts", 0))) < AUTH_CONFIG_TTL:
+                return cached
+    except Exception:
+        pass
+
+    # Cache miss / stale — fetch once and persist
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            AUTH_CONFIG_URL, headers={"User-Agent": "bacon-core/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        if not isinstance(data, dict):
+            return {}
+        data["_ts"] = time.time()
+        # Only persist a USABLE config. The endpoint serves env vars that default
+        # to "" — caching a blank (transient backend misconfig) would otherwise
+        # stick a broken, login-failing config for the full TTL. We still return
+        # whatever we fetched so a one-off call works; we just don't cache junk.
+        if data.get("token_url") and data.get("client_id"):
+            try:
+                CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
+                AUTH_CONFIG_FILE.write_text(json.dumps(data))
+            except Exception:
+                pass  # cache write is best-effort; still return the fetched config
+        return data
+    except Exception:
+        return {}
+
+
 def _try_refresh_token(refresh_token: str, config: dict) -> str | None:
     """
     Exchange a refresh_token for a new id_token via the Clerk token endpoint.
@@ -91,17 +143,9 @@ def _try_refresh_token(refresh_token: str, config: dict) -> str | None:
         import urllib.parse
         import urllib.error
 
-        # Fetch OAuth config to get the token URL
-        config_url = "https://api.geturbacon.dev/v1/auth/config"
-        try:
-            with urllib.request.urlopen(
-                urllib.request.Request(config_url, headers={"User-Agent": "bacon-core/1.0"}),
-                timeout=5,
-            ) as resp:
-                oauth = json.loads(resp.read())
-        except Exception:
-            return None
-
+        # OAuth config is static — read it from the on-disk cache (fetches
+        # /v1/auth/config at most once per TTL) rather than on every refresh.
+        oauth = _get_auth_config()
         token_url = oauth.get("token_url", "")
         client_id = oauth.get("client_id", "")
         if not token_url or not client_id:
@@ -497,13 +541,51 @@ def buffer_report(rec: dict) -> None:
 # Spawn refill daemon
 # ---------------------------------------------------------------------------
 
+REFILL_STAMP_FILE = CONFIG_DIR / "refill.stamp"  # last spawn_refill() time
+REFILL_MIN_INTERVAL = 30  # seconds — collapse overlapping spawns
+
+
+def _refill_cooldown_active() -> bool:
+    """
+    Return True if a refill was spawned within the last REFILL_MIN_INTERVAL
+    seconds (so this spawn should be skipped). Uses an flock'd stamp file so
+    concurrent callers — the 1s statusline tick plus prompt/session hooks all
+    fire spawn_refill() — collapse to a single spawn instead of stampeding.
+
+    On the False (allow) path it atomically records "now" as the spawn time.
+    Fail-open: returns False (allow the spawn) on any error.
+    """
+    try:
+        CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
+        fd = os.open(str(REFILL_STAMP_FILE), os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                raw = f.read().strip()
+                last = float(raw) if raw else 0.0
+                now = time.time()
+                if now - last < REFILL_MIN_INTERVAL:
+                    return True
+                f.seek(0)
+                f.truncate()
+                f.write(str(now))
+                return False
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception:
+        return False
+
+
 def spawn_refill() -> None:
     """
     Launch bin/bacon-refill detached (same pattern as bacon-fetch launches
     bacon-report: start_new_session=True, stdout/stderr → DEVNULL).
+    Skipped if another refill was spawned within REFILL_MIN_INTERVAL.
     Fail-open.
     """
     try:
+        if _refill_cooldown_active():
+            return
         refill_script = Path(__file__).parent / "bacon-refill"
         subprocess.Popen(
             [sys.executable, str(refill_script)],

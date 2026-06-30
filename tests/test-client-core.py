@@ -25,6 +25,9 @@ b.CONFIG_DIR = TMP
 b.TOKENS_FILE = TMP / "tokens.json"
 b.CAMPAIGNS_FILE = TMP / "campaigns.json"
 b.REPORTS_FILE = TMP / "reports.jsonl"
+b.CONFIG_FILE = TMP / "config.json"
+b.AUTH_CONFIG_FILE = TMP / "auth_config.json"
+b.REFILL_STAMP_FILE = TMP / "refill.stamp"
 
 # Test results tracking
 tests_passed = 0
@@ -405,6 +408,120 @@ def test_load_config():
         tests_failed += 1
 
 
+def test_auth_config_cache():
+    """_get_auth_config caches on disk and hits the network at most once per TTL."""
+    global tests_passed, tests_failed
+    test_names.append("test_auth_config_cache")
+    reset_files()
+    try:
+        if b.AUTH_CONFIG_FILE.exists():
+            b.AUTH_CONFIG_FILE.unlink()
+
+        import urllib.request
+        calls = {"n": 0}
+
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self):
+                return json.dumps({
+                    "client_id": "cid",
+                    "authorize_url": "https://a",
+                    "token_url": "https://t",
+                }).encode()
+
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            return _Resp()
+
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            c1 = b._get_auth_config()
+            c2 = b._get_auth_config()
+        finally:
+            urllib.request.urlopen = orig
+
+        assert calls["n"] == 1, f"Expected 1 network fetch, got {calls['n']}"
+        assert c1.get("token_url") == "https://t", f"bad config: {c1}"
+        assert c2.get("client_id") == "cid", f"cached config wrong: {c2}"
+        assert b.AUTH_CONFIG_FILE.exists(), "auth_config.json not written"
+
+        # Stale cache forces a re-fetch.
+        stale = json.loads(b.AUTH_CONFIG_FILE.read_text())
+        stale["_ts"] = time.time() - (b.AUTH_CONFIG_TTL + 1)
+        b.AUTH_CONFIG_FILE.write_text(json.dumps(stale))
+        urllib.request.urlopen = fake_urlopen
+        try:
+            b._get_auth_config()
+        finally:
+            urllib.request.urlopen = orig
+        assert calls["n"] == 2, f"Stale cache should re-fetch, got {calls['n']} total"
+
+        # A blank/unusable response (backend env unset → "") must NOT be cached,
+        # or a transient misconfig would stick a broken config for the full TTL.
+        if b.AUTH_CONFIG_FILE.exists():
+            b.AUTH_CONFIG_FILE.unlink()
+
+        class _BlankResp(_Resp):
+            def read(self):
+                return json.dumps({
+                    "client_id": "", "authorize_url": "", "token_url": "",
+                }).encode()
+
+        def blank_urlopen(req, timeout=None):
+            calls["n"] += 1
+            return _BlankResp()
+
+        urllib.request.urlopen = blank_urlopen
+        try:
+            blank = b._get_auth_config()      # returns the blank dict (one-off)
+            again = b._get_auth_config()      # must re-fetch, not serve a cached blank
+        finally:
+            urllib.request.urlopen = orig
+        assert blank.get("client_id") == "", f"blank fetch should return as-is: {blank}"
+        assert not b.AUTH_CONFIG_FILE.exists(), "blank config must NOT be cached to disk"
+        assert calls["n"] == 4, f"blank response must not be cached (re-fetch), got {calls['n']}"
+
+        print("✓ test_auth_config_cache PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_auth_config_cache FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_auth_config_cache ERROR: {e}")
+        tests_failed += 1
+
+
+def test_refill_cooldown():
+    """_refill_cooldown_active allows the first spawn, then suppresses within the window."""
+    global tests_passed, tests_failed
+    test_names.append("test_refill_cooldown")
+    reset_files()
+    try:
+        if b.REFILL_STAMP_FILE.exists():
+            b.REFILL_STAMP_FILE.unlink()
+
+        first = b._refill_cooldown_active()   # records now, allows spawn
+        second = b._refill_cooldown_active()  # within window, suppresses
+        assert first is False, f"First call should allow (False), got {first}"
+        assert second is True, f"Second call should suppress (True), got {second}"
+
+        # Backdate the stamp beyond the window → allowed again.
+        b.REFILL_STAMP_FILE.write_text(str(time.time() - (b.REFILL_MIN_INTERVAL + 1)))
+        third = b._refill_cooldown_active()
+        assert third is False, f"After interval, should allow (False), got {third}"
+
+        print("✓ test_refill_cooldown PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_refill_cooldown FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_refill_cooldown ERROR: {e}")
+        tests_failed += 1
+
+
 def main():
     """Run all tests and report results."""
     global tests_passed, tests_failed
@@ -428,6 +545,8 @@ def main():
     test_buffer_report()
     test_campaigns_cache()
     test_load_config()
+    test_auth_config_cache()
+    test_refill_cooldown()
 
     print()
     print("=" * 70)
