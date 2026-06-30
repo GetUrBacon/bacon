@@ -65,12 +65,16 @@ try:
 except Exception:
     sys.exit(0)
 
+# Resolve auth headers ONCE for all network steps below. get_auth_header()
+# checks token expiry and refreshes if needed (which may fetch OAuth config);
+# calling it per-step re-ran that work up to 3x per run.
+auth_headers = b.get_auth_header()
+
 # ---------------------------------------------------------------------------
 # Step 2 — sync campaigns
 # ---------------------------------------------------------------------------
 
 try:
-    auth_headers = b.get_auth_header()
     data = _http_get(b.campaigns_sync_url(config), timeout=2.0, extra_headers=auth_headers)
     campaigns = data.get("campaigns", [])
     b.CONFIG_DIR.mkdir(exist_ok=True)
@@ -97,7 +101,6 @@ try:
     if needed > 0:
         user_id = config.get("user_id")
         profile_tier = config.get("profile_tier", "anonymous")
-        auth_headers = b.get_auth_header()
         status, resp_data = _http_post(
             b.tokens_url(config),
             {"user_id": user_id, "n": needed, "profile_tier": profile_tier},
@@ -150,7 +153,6 @@ try:
 
         if records:
             try:
-                auth_headers = b.get_auth_header()
                 status, _ = _http_post(
                     b.batch_url(config),
                     {"reports": records},
