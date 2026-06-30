@@ -117,11 +117,16 @@ def _get_auth_config() -> dict:
         if not isinstance(data, dict):
             return {}
         data["_ts"] = time.time()
-        try:
-            CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
-            AUTH_CONFIG_FILE.write_text(json.dumps(data))
-        except Exception:
-            pass  # cache write is best-effort; still return the fetched config
+        # Only persist a USABLE config. The endpoint serves env vars that default
+        # to "" — caching a blank (transient backend misconfig) would otherwise
+        # stick a broken, login-failing config for the full TTL. We still return
+        # whatever we fetched so a one-off call works; we just don't cache junk.
+        if data.get("token_url") and data.get("client_id"):
+            try:
+                CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
+                AUTH_CONFIG_FILE.write_text(json.dumps(data))
+            except Exception:
+                pass  # cache write is best-effort; still return the fetched config
         return data
     except Exception:
         return {}

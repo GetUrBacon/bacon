@@ -458,6 +458,31 @@ def test_auth_config_cache():
             urllib.request.urlopen = orig
         assert calls["n"] == 2, f"Stale cache should re-fetch, got {calls['n']} total"
 
+        # A blank/unusable response (backend env unset → "") must NOT be cached,
+        # or a transient misconfig would stick a broken config for the full TTL.
+        if b.AUTH_CONFIG_FILE.exists():
+            b.AUTH_CONFIG_FILE.unlink()
+
+        class _BlankResp(_Resp):
+            def read(self):
+                return json.dumps({
+                    "client_id": "", "authorize_url": "", "token_url": "",
+                }).encode()
+
+        def blank_urlopen(req, timeout=None):
+            calls["n"] += 1
+            return _BlankResp()
+
+        urllib.request.urlopen = blank_urlopen
+        try:
+            blank = b._get_auth_config()      # returns the blank dict (one-off)
+            again = b._get_auth_config()      # must re-fetch, not serve a cached blank
+        finally:
+            urllib.request.urlopen = orig
+        assert blank.get("client_id") == "", f"blank fetch should return as-is: {blank}"
+        assert not b.AUTH_CONFIG_FILE.exists(), "blank config must NOT be cached to disk"
+        assert calls["n"] == 4, f"blank response must not be cached (re-fetch), got {calls['n']}"
+
         print("✓ test_auth_config_cache PASSED")
         tests_passed += 1
     except AssertionError as e:
