@@ -25,6 +25,8 @@ b.CONFIG_DIR = TMP
 b.TOKENS_FILE = TMP / "tokens.json"
 b.CAMPAIGNS_FILE = TMP / "campaigns.json"
 b.REPORTS_FILE = TMP / "reports.jsonl"
+b.AUTH_CONFIG_CACHE_FILE = TMP / "auth_config_cache.json"
+b.REFILL_STATE_FILE = TMP / "refill_state.json"
 
 # Test results tracking
 tests_passed = 0
@@ -34,7 +36,8 @@ test_names = []
 
 def reset_files():
     """Clean up test files between tests."""
-    for f in [b.TOKENS_FILE, b.CAMPAIGNS_FILE, b.REPORTS_FILE]:
+    for f in [b.TOKENS_FILE, b.CAMPAIGNS_FILE, b.REPORTS_FILE,
+              b.AUTH_CONFIG_CACHE_FILE, b.REFILL_STATE_FILE]:
         if f.exists():
             try:
                 f.unlink()
@@ -405,6 +408,169 @@ def test_load_config():
         tests_failed += 1
 
 
+def test_auth_config_cache_hit_skips_network():
+    """_get_oauth_config() must return the on-disk cache without hitting the
+    network when the cache is fresh (< AUTH_CONFIG_TTL_SEC old)."""
+    global tests_passed, tests_failed
+    test_names.append("test_auth_config_cache_hit_skips_network")
+    reset_files()
+    try:
+        b._write_auth_config_cache({"token_url": "https://cached/token", "client_id": "c1"})
+
+        def _boom(*a, **k):
+            raise AssertionError("network should not be called on a cache hit")
+
+        import urllib.request
+        orig_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = _boom
+        try:
+            oauth = b._get_oauth_config()
+        finally:
+            urllib.request.urlopen = orig_urlopen
+
+        assert oauth == {"token_url": "https://cached/token", "client_id": "c1"}, oauth
+        print("✓ test_auth_config_cache_hit_skips_network PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_auth_config_cache_hit_skips_network FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_auth_config_cache_hit_skips_network ERROR: {e}")
+        tests_failed += 1
+
+
+def test_auth_config_cache_expired_refetches():
+    """An expired on-disk cache must be ignored and refreshed from the network,
+    then rewritten to disk."""
+    global tests_passed, tests_failed
+    test_names.append("test_auth_config_cache_expired_refetches")
+    reset_files()
+    try:
+        stale = {"ts": time.time() - (b.AUTH_CONFIG_TTL_SEC + 10),
+                  "oauth": {"token_url": "https://stale/token"}}
+        b.AUTH_CONFIG_CACHE_FILE.write_text(json.dumps(stale))
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"token_url": "https://fresh/token", "client_id": "c2"}).encode()
+
+        import urllib.request
+        orig_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = lambda *a, **k: _FakeResp()
+        try:
+            oauth = b._get_oauth_config()
+        finally:
+            urllib.request.urlopen = orig_urlopen
+
+        assert oauth.get("token_url") == "https://fresh/token", oauth
+        on_disk = json.loads(b.AUTH_CONFIG_CACHE_FILE.read_text())
+        assert on_disk["oauth"]["token_url"] == "https://fresh/token", on_disk
+        print("✓ test_auth_config_cache_expired_refetches PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_auth_config_cache_expired_refetches FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_auth_config_cache_expired_refetches ERROR: {e}")
+        tests_failed += 1
+
+
+def test_refill_cooldown_blocks_rapid_reattempts():
+    """_refill_recently_attempted() must claim the slot on first call and
+    report 'recently attempted' on an immediate second call."""
+    global tests_passed, tests_failed
+    test_names.append("test_refill_cooldown_blocks_rapid_reattempts")
+    reset_files()
+    try:
+        first = b._refill_recently_attempted()
+        second = b._refill_recently_attempted()
+        assert first is False, f"first call should claim the slot, got {first}"
+        assert second is True, f"second call within cooldown should be blocked, got {second}"
+        print("✓ test_refill_cooldown_blocks_rapid_reattempts PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_refill_cooldown_blocks_rapid_reattempts FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_refill_cooldown_blocks_rapid_reattempts ERROR: {e}")
+        tests_failed += 1
+
+
+def test_refill_cooldown_expires():
+    """Once REFILL_COOLDOWN_SEC has elapsed, a new attempt must be allowed."""
+    global tests_passed, tests_failed
+    test_names.append("test_refill_cooldown_expires")
+    reset_files()
+    try:
+        b.REFILL_STATE_FILE.write_text(json.dumps({
+            "last_attempt": time.time() - (b.REFILL_COOLDOWN_SEC + 5)
+        }))
+        blocked = b._refill_recently_attempted()
+        assert blocked is False, f"expired cooldown should allow a new attempt, got {blocked}"
+        print("✓ test_refill_cooldown_expires PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_refill_cooldown_expires FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_refill_cooldown_expires ERROR: {e}")
+        tests_failed += 1
+
+
+def test_spawn_refill_respects_cooldown():
+    """spawn_refill() must not Popen a second time within the cooldown window."""
+    global tests_passed, tests_failed
+    test_names.append("test_spawn_refill_respects_cooldown")
+    reset_files()
+    try:
+        calls = []
+        orig_popen = b.subprocess.Popen
+        b.subprocess.Popen = lambda *a, **k: calls.append((a, k))
+        try:
+            b.spawn_refill()
+            b.spawn_refill()
+        finally:
+            b.subprocess.Popen = orig_popen
+
+        assert len(calls) == 1, f"expected exactly 1 Popen call, got {len(calls)}"
+        print("✓ test_spawn_refill_respects_cooldown PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_spawn_refill_respects_cooldown FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_spawn_refill_respects_cooldown ERROR: {e}")
+        tests_failed += 1
+
+
+def test_record_refill_auth_status():
+    """record_refill_auth_status() persists auth_ok for bacon-earnings to read."""
+    global tests_passed, tests_failed
+    test_names.append("test_record_refill_auth_status")
+    reset_files()
+    try:
+        b.record_refill_auth_status(False)
+        state = json.loads(b.REFILL_STATE_FILE.read_text())
+        assert state.get("auth_ok") is False, state
+        b.record_refill_auth_status(True)
+        state2 = json.loads(b.REFILL_STATE_FILE.read_text())
+        assert state2.get("auth_ok") is True, state2
+        print("✓ test_record_refill_auth_status PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_record_refill_auth_status FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_record_refill_auth_status ERROR: {e}")
+        tests_failed += 1
+
+
 def main():
     """Run all tests and report results."""
     global tests_passed, tests_failed
@@ -428,6 +594,12 @@ def main():
     test_buffer_report()
     test_campaigns_cache()
     test_load_config()
+    test_auth_config_cache_hit_skips_network()
+    test_auth_config_cache_expired_refetches()
+    test_refill_cooldown_blocks_rapid_reattempts()
+    test_refill_cooldown_expires()
+    test_spawn_refill_respects_cooldown()
+    test_record_refill_auth_status()
 
     print()
     print("=" * 70)

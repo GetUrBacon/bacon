@@ -28,9 +28,15 @@ CONFIG_DIR   = Path.home() / ".bacon"
 CAMPAIGNS_FILE = CONFIG_DIR / "campaigns.json"   # {"ts": float, "campaigns": [...]}
 TOKENS_FILE  = CONFIG_DIR / "tokens.json"        # list of {"impression_id","token"}
 REPORTS_FILE = CONFIG_DIR / "reports.jsonl"      # one JSON object per line
+AUTH_CONFIG_CACHE_FILE = CONFIG_DIR / "auth_config_cache.json"  # {"ts": float, "oauth": {...}}
+REFILL_STATE_FILE = CONFIG_DIR / "refill_state.json"  # {"last_attempt": float, "last_error": str|None}
 
 AUCTION_URL_DEFAULT = "https://api.geturbacon.dev/v1/auction"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+
+AUTH_CONFIG_URL = "https://api.geturbacon.dev/v1/auth/config"
+AUTH_CONFIG_TTL_SEC = 300   # matches the server's own Cache-Control: max-age=300
+REFILL_COOLDOWN_SEC = 180   # min gap between spawn_refill() attempts
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +86,61 @@ def _token_is_expired(token: str, skew_seconds: int = 10) -> bool:
         return False
 
 
+def _load_auth_config_cache() -> dict | None:
+    """Return the cached /v1/auth/config body if present and within
+    AUTH_CONFIG_TTL_SEC, else None. Never raises."""
+    try:
+        if not AUTH_CONFIG_CACHE_FILE.exists():
+            return None
+        data = json.loads(AUTH_CONFIG_CACHE_FILE.read_text())
+        if (time.time() - data.get("ts", 0)) > AUTH_CONFIG_TTL_SEC:
+            return None
+        return data.get("oauth")
+    except Exception:
+        return None
+
+
+def _write_auth_config_cache(oauth: dict) -> None:
+    """Persist the /v1/auth/config body with 0600 perms. Never raises."""
+    try:
+        CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
+        data = json.dumps({"ts": time.time(), "oauth": oauth})
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(str(AUTH_CONFIG_CACHE_FILE), flags, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(data)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _get_oauth_config() -> dict | None:
+    """
+    Return the /v1/auth/config body, backed by an on-disk cache that respects
+    the server's own `Cache-Control: public, max-age=300`. bacon-refill calls
+    get_auth_header() up to 3 times per run, and separate refill invocations
+    are separate short-lived processes, so an in-memory-only cache wouldn't
+    help — the on-disk cache is what collapses all of that down to at most
+    one real fetch per AUTH_CONFIG_TTL_SEC window. Returns None on any error.
+    """
+    cached = _load_auth_config_cache()
+    if cached is not None:
+        return cached
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+            urllib.request.Request(AUTH_CONFIG_URL, headers={"User-Agent": "bacon-core/1.0"}),
+            timeout=5,
+        ) as resp:
+            oauth = json.loads(resp.read())
+        _write_auth_config_cache(oauth)
+        return oauth
+    except Exception:
+        return None
+
+
 def _try_refresh_token(refresh_token: str, config: dict) -> str | None:
     """
     Exchange a refresh_token for a new id_token via the Clerk token endpoint.
@@ -91,15 +152,8 @@ def _try_refresh_token(refresh_token: str, config: dict) -> str | None:
         import urllib.parse
         import urllib.error
 
-        # Fetch OAuth config to get the token URL
-        config_url = "https://api.geturbacon.dev/v1/auth/config"
-        try:
-            with urllib.request.urlopen(
-                urllib.request.Request(config_url, headers={"User-Agent": "bacon-core/1.0"}),
-                timeout=5,
-            ) as resp:
-                oauth = json.loads(resp.read())
-        except Exception:
+        oauth = _get_oauth_config()
+        if not oauth:
             return None
 
         token_url = oauth.get("token_url", "")
@@ -497,13 +551,96 @@ def buffer_report(rec: dict) -> None:
 # Spawn refill daemon
 # ---------------------------------------------------------------------------
 
+def _refill_recently_attempted() -> bool:
+    """
+    Atomically check-and-claim REFILL_STATE_FILE's last_attempt slot.
+    Returns True if a spawn was already attempted within REFILL_COOLDOWN_SEC
+    (caller should skip spawning this time), False if this call claims the
+    attempt slot (caller should proceed to spawn).
+    Fail-open: any error is treated as "not recently attempted" so a broken
+    state file never permanently blocks refills.
+    """
+    try:
+        CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT
+        fd = os.open(str(REFILL_STATE_FILE), flags, 0o600)
+        try:
+            with os.fdopen(fd, "r+") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                try:
+                    f.seek(0)
+                    raw = f.read()
+                    try:
+                        state = json.loads(raw) if raw.strip() else {}
+                    except Exception:
+                        state = {}
+                    now = time.time()
+                    last_attempt = state.get("last_attempt", 0)
+                    if (now - last_attempt) < REFILL_COOLDOWN_SEC:
+                        return True
+                    state["last_attempt"] = now
+                    f.seek(0)
+                    f.truncate()
+                    f.write(json.dumps(state))
+                    return False
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def record_refill_auth_status(ok: bool) -> None:
+    """
+    Persist whether the most recent bacon-refill run obtained a valid
+    Authorization header (when a refresh_token is configured). Lets
+    bacon-earnings surface a "reconnect your session" hint locally instead of
+    this class of failure being invisible short of backend log spelunking.
+    Fail-open.
+    """
+    try:
+        CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT
+        fd = os.open(str(REFILL_STATE_FILE), flags, 0o600)
+        try:
+            with os.fdopen(fd, "r+") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                try:
+                    f.seek(0)
+                    raw = f.read()
+                    try:
+                        state = json.loads(raw) if raw.strip() else {}
+                    except Exception:
+                        state = {}
+                    state["auth_ok"] = ok
+                    state["auth_checked_ts"] = time.time()
+                    f.seek(0)
+                    f.truncate()
+                    f.write(json.dumps(state))
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def spawn_refill() -> None:
     """
     Launch bin/bacon-refill detached (same pattern as bacon-fetch launches
     bacon-report: start_new_session=True, stdout/stderr → DEVNULL).
+
+    Guarded by a cooldown (REFILL_COOLDOWN_SEC) persisted in
+    REFILL_STATE_FILE: without it, a user whose refresh_token has gone bad
+    keeps tokens_low()/campaigns_stale() permanently True, so every single
+    prompt would otherwise re-spawn a refill process that immediately fails
+    again — hammering the backend forever with no backoff.
     Fail-open.
     """
     try:
+        if _refill_recently_attempted():
+            return
         refill_script = Path(__file__).parent / "bacon-refill"
         subprocess.Popen(
             [sys.executable, str(refill_script)],

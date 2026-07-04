@@ -71,6 +71,15 @@ except Exception:
 
 try:
     auth_headers = b.get_auth_header()
+    # Record whether we could obtain a valid Authorization header when a
+    # refresh_token is configured, so a persistently broken refresh_token is
+    # locally diagnosable (see bacon-earnings) instead of only visible in
+    # backend logs.
+    try:
+        if config.get("clerk_refresh_token"):
+            b.record_refill_auth_status(bool(auth_headers))
+    except Exception:
+        pass
     data = _http_get(b.campaigns_sync_url(config), timeout=2.0, extra_headers=auth_headers)
     campaigns = data.get("campaigns", [])
     b.CONFIG_DIR.mkdir(exist_ok=True)

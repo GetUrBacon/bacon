@@ -84,6 +84,18 @@ def main():
     print(f"  Frequency tier: {config.get('frequency_tier', 'standard')}")
     print(f"  Profile tier:   {config.get('profile_tier', 'anonymous')}")
     print(f"  Effective CPM:  ${cpm:.2f}")
+
+    # Surface a locally-diagnosable hint if the last refill couldn't refresh
+    # the session token, instead of this failing silently forever.
+    try:
+        if b.REFILL_STATE_FILE.exists():
+            refill_state = json.loads(b.REFILL_STATE_FILE.read_text())
+            if refill_state.get("auth_ok") is False:
+                print("  ⚠ Session token refresh has been failing — run "
+                      "`bacon-setup login` to reconnect.")
+    except Exception:
+        pass
+
     print("─" * 40)
     print("  Subscription progress:")
     print(f"    Pro  ($20/mo): [{bar(pro_pct)}] {pro_pct:.1f}%")
