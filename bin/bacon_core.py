@@ -39,6 +39,12 @@ AUTH_CONFIG_FILE = CONFIG_DIR / "auth_config.json"  # {..., "_ts": float}
 AUTH_CONFIG_URL  = "https://api.geturbacon.dev/v1/auth/config"
 AUTH_CONFIG_TTL  = 86400  # 24h
 
+# Last-known result of resolving an Authorization header when a refresh_token
+# is configured. Lets bacon-earnings surface a persistently-broken refresh
+# token locally (e.g. a revoked refresh_token) instead of that only being
+# visible as repeated backend auth failures.
+AUTH_STATUS_FILE = CONFIG_DIR / "auth_status.json"  # {"ok": bool, "ts": float}
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -260,6 +266,29 @@ def get_auth_header() -> dict:
     except Exception:
         pass
     return {}
+
+
+def record_refill_auth_status(ok: bool) -> None:
+    """
+    Persist whether the most recent bacon-refill run obtained a valid
+    Authorization header (call only when a refresh_token is configured, so an
+    intentionally token-less/anonymous install doesn't get flagged as
+    "broken"). Lets bacon-earnings surface a "reconnect your session" hint
+    locally when refresh keeps failing, instead of this only being visible
+    as repeated backend auth failures. Never raises.
+    """
+    try:
+        CONFIG_DIR.mkdir(mode=0o700, exist_ok=True)
+        data = json.dumps({"ok": ok, "ts": time.time()})
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(str(AUTH_STATUS_FILE), flags, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(data)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

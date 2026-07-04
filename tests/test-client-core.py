@@ -28,6 +28,7 @@ b.REPORTS_FILE = TMP / "reports.jsonl"
 b.CONFIG_FILE = TMP / "config.json"
 b.AUTH_CONFIG_FILE = TMP / "auth_config.json"
 b.REFILL_STAMP_FILE = TMP / "refill.stamp"
+b.AUTH_STATUS_FILE = TMP / "auth_status.json"
 
 # Test results tracking
 tests_passed = 0
@@ -522,6 +523,35 @@ def test_refill_cooldown():
         tests_failed += 1
 
 
+def test_record_refill_auth_status():
+    """record_refill_auth_status persists ok/ts and is readable back as JSON."""
+    global tests_passed, tests_failed
+    test_names.append("test_record_refill_auth_status")
+    reset_files()
+    try:
+        if b.AUTH_STATUS_FILE.exists():
+            b.AUTH_STATUS_FILE.unlink()
+
+        b.record_refill_auth_status(False)
+        assert b.AUTH_STATUS_FILE.exists(), "Status file should be created"
+        status = json.loads(b.AUTH_STATUS_FILE.read_text())
+        assert status.get("ok") is False, f"Expected ok=False, got {status}"
+        assert "ts" in status, f"Expected a ts field, got {status}"
+
+        b.record_refill_auth_status(True)
+        status = json.loads(b.AUTH_STATUS_FILE.read_text())
+        assert status.get("ok") is True, f"Expected ok=True after re-record, got {status}"
+
+        print("✓ test_record_refill_auth_status PASSED")
+        tests_passed += 1
+    except AssertionError as e:
+        print(f"✗ test_record_refill_auth_status FAILED: {e}")
+        tests_failed += 1
+    except Exception as e:
+        print(f"✗ test_record_refill_auth_status ERROR: {e}")
+        tests_failed += 1
+
+
 def main():
     """Run all tests and report results."""
     global tests_passed, tests_failed
@@ -547,6 +577,7 @@ def main():
     test_load_config()
     test_auth_config_cache()
     test_refill_cooldown()
+    test_record_refill_auth_status()
 
     print()
     print("=" * 70)
