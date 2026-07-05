@@ -42,7 +42,7 @@ def fetch_earnings(config):
     user_id = config.get("user_id", "anon")
     url = f"{base}/v1/earnings/{user_id}"
     try:
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "bacon-earnings/1.0"}
         auth_headers = b.get_auth_header()
         if auth_headers:
             headers.update(auth_headers)
