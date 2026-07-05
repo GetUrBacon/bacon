@@ -27,7 +27,11 @@ import fcntl
 
 
 def _http_get(url, timeout=2.0, extra_headers=None):
-    headers = {"Content-Type": "application/json", "X-Bacon-Version": "0.1.0"}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Bacon-Version": "0.1.0",
+        "User-Agent": "bacon-refill/1.0",
+    }
     if extra_headers:
         headers.update(extra_headers)
     req = urllib.request.Request(
@@ -41,7 +45,11 @@ def _http_get(url, timeout=2.0, extra_headers=None):
 
 def _http_post(url, payload, timeout=2.0, extra_headers=None):
     body = json.dumps(payload).encode()
-    headers = {"Content-Type": "application/json", "X-Bacon-Version": "0.1.0"}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Bacon-Version": "0.1.0",
+        "User-Agent": "bacon-refill/1.0",
+    }
     if extra_headers:
         headers.update(extra_headers)
     req = urllib.request.Request(
